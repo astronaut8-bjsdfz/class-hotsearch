@@ -423,18 +423,53 @@ body {
 .btn-submit:hover { background: var(--red-deep); }
 .btn-submit:active { transform: scale(.985); }
 
-.preview-warn {
+.note-box {
   margin: 12px 0 0;
   font-size: 12px;
   line-height: 1.65;
-  color: #9a6b00;
-  background: #fff9ec;
-  border: 1px solid #ffe6b8;
   border-radius: var(--radius-sm);
   padding: 10px 12px;
 }
 
-.preview-warn strong { color: #7a5200; }
+.note-box:empty { display: none; }
+
+.note-box.is-preview {
+  color: #9a6b00;
+  background: #fff9ec;
+  border: 1px solid #ffe6b8;
+}
+
+.note-box.is-live {
+  color: #0d6b47;
+  background: #eefaf4;
+  border: 1px solid #bfe8d5;
+}
+
+.note-box.is-error {
+  color: #a3222c;
+  background: #fdf0f1;
+  border: 1px solid #f6cdd1;
+}
+
+/* ---------- 空状态 ---------- */
+
+.empty-state {
+  padding: 38px 10px;
+  text-align: center;
+}
+
+.empty-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.empty-sub {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--ink-3);
+}
 
 /* ---------- 规则 ---------- */
 
