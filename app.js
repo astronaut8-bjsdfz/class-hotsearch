@@ -9,9 +9,9 @@
 
 const CONFIG = {
   siteTitle: "班级热搜榜",
-  className: "初三七班",            // 建议不写学校全称
-  countdownLabel: "距离中考",        // 不想要倒计时就把 countdownDate 设为空字符串
-  countdownDate: "2027-06-20",
+  className: "高一8班",             // 建议不写学校全称
+  countdownLabel: "距离期中考试",     // 不想要倒计时就把 countdownDate 设为空字符串
+  countdownDate: "2026-11-04",
   boardNote: "热度实时更新",
   maxLength: 30,
   minLength: 4,
@@ -238,7 +238,7 @@ function renderList() {
   if (day.items.length === 0) {
     const empty = el("li", "empty-state");
     empty.appendChild(el("p", "empty-title", "今天还没有人爆料"));
-    empty.appendChild(el("p", "empty-sub", "在右边写一句，你就是第一条热搜。"));
+    empty.appendChild(el("p", "empty-sub", "写一句，你就是今天的第一条热搜。"));
     list.appendChild(empty);
     return;
   }
