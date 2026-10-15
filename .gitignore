@@ -1,0 +1,17 @@
+# 系统自动生成的垃圾文件，不需要放进仓库
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
+
+# 编辑器配置
+.vscode/
+.idea/
+
+# 做页面预览自检时产生的临时文件，不用提交
+.preview-tmp/
+
+# 以后接入数据库时，放密钥的文件不要提交（现在还没有，先占位）
+config.secret.js
+.env
+.env.local

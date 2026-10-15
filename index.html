@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow, noarchive">
+<meta name="referrer" content="no-referrer">
+<meta name="theme-color" content="#fff6f7">
+<title>班级热搜榜</title>
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+
+<div class="wrap">
+
+  <header class="top">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none">
+          <path d="M12 2.6c.4 2.6-.6 4.2-2 5.6-1.5 1.5-3.1 3-3.1 5.7a6.1 6.1 0 0 0 12.2 0c0-2.4-1.2-4-2.3-5.4-.6 1-1.4 1.5-2.1 1.7.7-2.6.1-5.5-2.7-7.6Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+        </svg>
+      </div>
+      <div>
+        <h1 class="brand-title" id="siteTitle">班级热搜榜</h1>
+        <p class="brand-sub" id="className">初三七班</p>
+      </div>
+    </div>
+
+    <div class="meta">
+      <span class="meta-date" id="todayText"></span>
+      <span class="meta-dot" aria-hidden="true"></span>
+      <span class="meta-count" id="countdownText"></span>
+    </div>
+  </header>
+
+  <main class="layout">
+
+    <section class="card board" aria-labelledby="boardHeading">
+      <div class="card-head">
+        <h2 class="card-title" id="boardHeading">今日热搜</h2>
+        <span class="card-note" id="settleNote"></span>
+      </div>
+
+      <div class="tabs" id="dayTabs" role="tablist" aria-label="选择日期"></div>
+
+      <ol class="rank-list" id="rankList"></ol>
+    </section>
+
+    <aside class="side">
+
+      <section class="card submit" aria-labelledby="submitHeading">
+        <div class="card-head">
+          <h2 class="card-title" id="submitHeading">我也来爆个料</h2>
+        </div>
+
+        <label class="field">
+          <span class="field-label">我的昵称</span>
+          <input class="input" id="nicknameInput" type="text" maxlength="8" placeholder="比如：小满、十七" autocomplete="off">
+        </label>
+
+        <label class="field">
+          <span class="field-label">今天班里发生了什么</span>
+          <textarea class="input textarea" id="contentInput" rows="3" maxlength="30" placeholder="一句话讲清楚，越具体越容易上榜"></textarea>
+          <span class="counter"><em id="counterNum">0</em>/30</span>
+        </label>
+
+        <div class="field">
+          <span class="field-label">投到哪个榜</span>
+          <div class="cat-row" id="catRow"></div>
+        </div>
+
+        <button class="btn-submit" id="submitBtn" type="button">提交上去</button>
+
+        <p class="preview-warn">
+          <strong>当前是预览版。</strong>提交的内容只存在这个页面里，刷新就没了 —— 等接上数据库之后才会真正保存下来。
+        </p>
+      </section>
+
+      <section class="card rules" aria-labelledby="rulesHeading">
+        <div class="card-head">
+          <h2 class="card-title" id="rulesHeading">上榜规则</h2>
+        </div>
+        <ul class="rule-list">
+          <li>热度 = 点赞数 × 10 + 讨论数 × 5，每天 <b>20:00</b> 结算一次名次。</li>
+          <li>只写昵称，不写同学的<b>真实姓名</b>，老师也一律用化名或外号。</li>
+          <li>不写真名、不放同学正脸照、不写具体家庭情况。</li>
+          <li><b>友善优先</b>：不点名批评、不翻旧账。这条是底线，违反的会被直接删掉。</li>
+        </ul>
+      </section>
+
+    </aside>
+
+  </main>
+
+  <footer class="foot">
+    <p>这个页面只在知道链接的人之间流传，没有提交给任何搜索引擎收录。</p>
+  </footer>
+
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script src="./mock-data.js"></script>
+<script src="./app.js"></script>
+</body>
+</html>
