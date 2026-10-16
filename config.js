@@ -24,6 +24,9 @@ window.HOTSEARCH_BACKEND = {
   table: "hot_items",
 
   /* 公告表名，不用改 */
-  announceTable: "announcements"
+  announceTable: "announcements",
+
+  /* 评论表名，不用改（每条热搜的讨论板存在这里） */
+  commentTable: "comments"
 
 };

@@ -210,6 +210,7 @@ body {
   border-radius: var(--radius-sm);
   border-bottom: 1px solid var(--line);
   transition: background .16s ease;
+  cursor: pointer;          /* 整行都能点，点了进这条的讨论板 */
 }
 
 .rank-item:last-child { border-bottom: 0; }
@@ -252,6 +253,31 @@ body {
   color: var(--ink);
   word-break: break-word;
 }
+
+/* 标题本身就是一个真链接（写着 #t/那条的编号）。
+   好处是能右键新开一个标签、也能把链接发到班群里。 */
+a.content { text-decoration: none; color: inherit; }
+
+a.content:hover,
+a.content:focus-visible {
+  color: var(--red);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+/* 每行右下角的「评论数」，提示这条可以点进去聊 */
+.cmt-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--ink-3);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.cmt-chip svg { display: block; }
+.rank-item:hover .cmt-chip { color: var(--red); }
 
 .cat {
   flex: none;
@@ -528,6 +554,7 @@ body {
 }
 
 .announce-tag {
+  position: relative;      /* 未读红点要定位到它的左上角 */
   flex: none;
   display: inline-flex;
   align-items: center;
@@ -543,6 +570,29 @@ body {
 }
 
 .announce-tag svg { display: block; }
+
+/* 未读提醒：压在「公告」标签左上角的红色小圆标，显示没看过的条数。
+   用的是绝对定位，所以不管有没有它，公告栏的高度都不会变。 */
+.announce-badge {
+  position: absolute;
+  left: -7px;
+  top: -7px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--red);
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 800;
+  line-height: 17px;
+  letter-spacing: 0;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  /* 一圈白边，把它和底下的标签分开，看着才像个「浮起来」的角标 */
+  box-shadow: 0 0 0 2px var(--card);
+  pointer-events: none;
+}
 
 .announce-lead {
   flex: 1;
@@ -836,6 +886,297 @@ body {
   border-color: var(--red);
 }
 
+/* ---------- 讨论板 ---------- */
+/* 手机上从底部滑上来（底部弹层），电脑上变成中间的对话框。 */
+
+.discuss {
+  position: fixed;
+  inset: 0;
+  z-index: 80;              /* 比提示条（99）低，报错信息还能盖在上面 */
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+@media (min-width: 720px) {
+  .discuss { align-items: center; padding: 24px; }
+}
+
+.discuss-mask {
+  position: absolute;
+  inset: 0;
+  background: rgba(20, 20, 30, .42);
+}
+
+.discuss-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-height: 90vh;
+  background: var(--card);
+  border-radius: 18px 18px 0 0;
+  box-shadow: 0 -8px 40px -12px rgba(20, 20, 30, .3);
+  overflow: hidden;
+  /* 只用「位移」做入场。真浏览器里是一点点滑上来的效果；
+     万一动画时钟不前进（无头浏览器截图会遇到），它就是低 10px，
+     位置和尺寸都不会被带偏。 */
+  animation: discussUp .2s ease both;
+}
+
+@keyframes discussUp {
+  from { transform: translateY(10px); }
+  to   { transform: translateY(0); }
+}
+
+@media (min-width: 720px) {
+  .discuss-panel {
+    max-width: 560px;
+    max-height: 82vh;
+    border-radius: var(--radius);
+    box-shadow: 0 18px 60px -18px rgba(20, 20, 30, .42);
+  }
+}
+
+.discuss-head {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.discuss-head-text { flex: 1; min-width: 0; }
+
+.discuss-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.discuss-sub {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--ink-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.discuss-close {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line-2);
+  background: #fff;
+  border-radius: 999px;
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: all .16s ease;
+}
+
+.discuss-close:hover { border-color: var(--red); color: var(--red); }
+.discuss-close svg { display: block; }
+
+/* 可滚动的中间段：原帖 + 评论列表。头尾固定，只有它滚。 */
+.discuss-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  padding: 14px 16px 8px;
+}
+
+/* ----- 最上面引用的那条热搜 ----- */
+
+.op {
+  border: 1px solid var(--line);
+  background: #fafafb;
+  border-radius: var(--radius-sm);
+  padding: 12px 13px 11px;
+}
+
+.op-top {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  margin-bottom: 7px;
+}
+
+.op-where { font-size: 11.5px; color: var(--ink-3); }
+
+.op-content {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--ink);
+  word-break: break-word;
+}
+
+.op-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 9px;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+/* ----- 评论 ----- */
+
+.cmt-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 16px 0 0;
+  font-size: 13px;
+}
+
+.cmt-head-title { font-weight: 700; }
+.cmt-head-count { font-size: 12px; color: var(--ink-3); }
+
+.cmt-head-mod {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: #9a6b00;
+  background: #fff9ec;
+  border: 1px solid #ffe6b8;
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+.cmt-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+
+.cmt-item {
+  padding: 10px 0 11px;
+  border-bottom: 1px solid var(--line);
+}
+
+.cmt-item:last-child { border-bottom: 0; }
+
+.cmt-item-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cmt-nickname {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--ink-2);
+}
+
+.cmt-when {
+  font-size: 11.5px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.cmt-body {
+  margin: 3px 0 0;
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.cmt-del {
+  margin-left: auto;
+  border: 1px solid var(--line-2);
+  background: #fff;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--ink-2);
+  padding: 1px 10px;
+  cursor: pointer;
+  transition: all .16s ease;
+}
+
+.cmt-del:hover { border-color: var(--red); color: var(--red); }
+
+.cmt-empty {
+  margin: 8px 0 0;
+  padding: 22px 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--ink-3);
+}
+
+/* ----- 底部发评论 ----- */
+
+.cmt-form {
+  flex: none;
+  padding: 12px 16px 14px;
+  border-top: 1px solid var(--line);
+  background: #fafafb;
+}
+
+.cmt-nick-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.cmt-label {
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.cmt-nick {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+  padding: 7px 10px;
+  font-size: 13px;
+}
+
+.cmt-counter {
+  flex: none;
+  font-size: 11px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.cmt-counter em { font-style: normal; }
+
+.cmt-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.cmt-input {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
+
+.cmt-send {
+  flex: none;
+  width: auto;
+  height: 42px;
+  padding: 0 18px;
+  font-size: 14px;
+}
+
 /* ---------- 页脚与提示 ---------- */
 
 .foot {
@@ -889,6 +1230,11 @@ body {
   transform: translate(-50%, 0);
 }
 
+/* 系统里设了「减少动态效果」就不动。这条也顺便让截图工具能拿到
+   最终状态 —— 无头浏览器的动画时钟不前进，入场动画会停在第一帧。 */
 @media (prefers-reduced-motion: reduce) {
-  * { transition: none !important; }
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
 }

@@ -37,7 +37,12 @@ const state = {
   announceOpen: false,         // 通知列表是否展开
   announceFormOpen: false,     // 发布表单是否展开
   announceEditingId: null,     // 正在编辑哪一条（null = 新建）
-  adminToken: ""
+  adminToken: "",
+  // 讨论板
+  comments: [],          // 全部评论（一次取回来，既算条数也用来渲染）
+  commentsReady: false,  // 评论接口通不通；评论表还没建时是 false
+  discussId: null,       // 正在看哪一条热搜的讨论板
+  discussPushed: false   // 讨论板是我们自己打开的吗（决定关闭时退不退历史）
 };
 
 /* ---------- 数据库连接层 ---------- */
@@ -129,6 +134,39 @@ async function unlikeOnBackend(id) {
   return await sbFetch("rpc/remove_like", {
     method: "POST",
     body: JSON.stringify({ item_id: id })
+  });
+}
+
+/* ---------- 评论（每条热搜的讨论板）----------
+   和热搜表一个思路：网页端只能读、只能新增，
+   改和删都被数据库拒掉。删不当评论必须走带口令的函数。 */
+
+const CMT_TABLE = SB.commentTable || "comments";
+
+/* 一次把评论全取回来。
+   为什么不按「打开哪条才取哪条」？因为榜单上每一行都要显示评论数，
+   一次拿回来只用一趟请求。班里这个量级（上限 1000 条）完全够用，
+   也省掉了「关联查询在新表建好后要等接口刷新缓存」这类麻烦。 */
+async function loadCommentsFromBackend() {
+  return await sbFetch(
+    CMT_TABLE + "?select=id,item_id,nickname,body,created_at" +
+    "&order=created_at.desc&limit=1000"
+  );
+}
+
+async function postCommentToBackend(itemId, nickname, body) {
+  const rows = await sbFetch(CMT_TABLE, {
+    method: "POST",
+    headers: { "Prefer": "return=representation" },
+    body: JSON.stringify({ item_id: itemId, nickname: nickname, body: body })
+  });
+  return rows && rows[0];
+}
+
+async function commentDeleteApi(token, id) {
+  return await sbFetch("rpc/comment_delete", {
+    method: "POST",
+    body: JSON.stringify({ token: token, p_id: id })
   });
 }
 
@@ -300,7 +338,9 @@ function refreshNote() {
 // 提前查一遍必需的元素在不在，好给出人话提示，而不是甩一串英文报错。
 const REQUIRED_IDS = [
   "weekTabs", "rankList", "boardHeading", "boardNote",
-  "catRow", "nicknameInput", "contentInput", "submitBtn", "dataNote"
+  "catRow", "nicknameInput", "contentInput", "submitBtn", "dataNote",
+  "announceBadge", "discussLayer", "discussOp", "cmtList", "cmtForm",
+  "cmtNick", "cmtInput"
 ];
 
 function missingParts() {
@@ -349,6 +389,10 @@ const HEART = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" aria-
   '<path d="M12 20s-7.5-4.6-7.5-9.6A4.4 4.4 0 0 1 12 7.6a4.4 4.4 0 0 1 7.5 2.8C19.5 15.4 12 20 12 20Z" ' +
   'stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>';
 
+const BUBBLE = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" aria-hidden="true">' +
+  '<path d="M20 12.4c0 3.5-3.6 6.4-8 6.4-.9 0-1.8-.13-2.6-.36L5.2 20l1-3.1C5.4 15.7 5 14.2 5 12.4 ' +
+  '5 8.9 8.6 6 13 6s7 2.9 7 6.4Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>';
+
 function renderList() {
   const list = document.getElementById("rankList");
   const wk = state.weeks[state.active];
@@ -382,6 +426,7 @@ function renderList() {
     }
 
     const li = el("li", "rank-item");
+    li.setAttribute("data-item-id", String(item.id));   // 讨论板靠它把这一行找回来
     if (rank <= 6) li.setAttribute("data-top", String(rank));
     if (isNew) li.classList.add("is-new-row");
 
@@ -389,7 +434,15 @@ function renderList() {
 
     const body = el("div", "body");
     const titleLine = el("div", "title-line");
-    titleLine.appendChild(el("p", "content", item.content));
+
+    // 标题本身就是这一条的链接（#t/编号），点开就是它的讨论板。
+    // 用真链接的好处：能右键「在新标签页打开」，也能把这一条的
+    // 地址直接发到班群里，别人点开就是这条的讨论。
+    const link = el("a", "content", item.content);
+    link.href = "#t/" + encodeURIComponent(String(item.id));
+    link.title = "进入这条的讨论板";
+    titleLine.appendChild(link);
+
     if (isNew) titleLine.appendChild(el("span", "badge-new", "新"));
     const cat = el("span", "cat", item.category);
     cat.setAttribute("data-cat", item.category);
@@ -420,20 +473,22 @@ function renderList() {
     sub.appendChild(d);
 
     sub.appendChild(el("span", "", "来自 " + item.nickname));
+
+    // 评论数：有人聊过就显示条数，还没有就写「讨论」提示这里能点进去
+    const chip = el("span", "cmt-chip");
+    chip.innerHTML = BUBBLE;
+    chip.appendChild(document.createTextNode(cmtChipText(item.id)));
+    sub.appendChild(chip);
+
     body.appendChild(sub);
     li.appendChild(body);
 
     // 点赞（再点一次就取消）
-    const liked = state.likeKeys.has(key);
     const btn = el("button", "like");
     btn.type = "button";
-    btn.setAttribute("aria-pressed", liked ? "true" : "false");
-    btn.title = liked ? "再点一次取消点赞" : "点一下点赞";
-    btn.innerHTML = HEART;
-    btn.appendChild(document.createTextNode(" " + item.likes));
-
+    paintLike(btn, item, state.likeKeys.has(key));
     btn.addEventListener("click", function () {
-      toggleLike(item, key, li, btn);
+      toggleLike(item, btn);
     });
 
     li.appendChild(btn);
@@ -444,12 +499,16 @@ function renderList() {
 /* ---------- 点赞 / 取消点赞 ---------- */
 
 /* 按一下赞，再按一下取消。
-   只看按钮的红色填充和数字变化就能看出当前是哪一态。 */
-async function toggleLike(item, key, li, btn) {
+   只看按钮的红色填充和数字变化就能看出当前是哪一态。
+   btn 只用来「点完先禁一下」防手快连点 —— 点赞也可能从讨论板里点，
+   所以按钮和行都不是必需的。 */
+async function toggleLike(item, btn) {
+  const key = String(item.id);
   const liked = state.likeKeys.has(key);   // 之前点过没
 
+  if (btn) btn.disabled = true;
+
   if (state.backendOk) {
-    btn.disabled = true;                   // 防手快连点，中途不许重复提交
     try {
       const n = liked ? await unlikeOnBackend(item.id)
                       : await likeOnBackend(item.id);
@@ -460,11 +519,11 @@ async function toggleLike(item, key, li, btn) {
       item.heat = liked ? Math.max(item.heat - 10, 60) : item.heat + 10;
     } catch (err) {
       console.error(err);
-      btn.disabled = false;
+      if (btn) btn.disabled = false;
       toast(liked ? "取消失败，检查一下网络再试" : "点赞失败，检查一下网络再试");
       return;
     }
-    btn.disabled = false;
+    if (btn) btn.disabled = false;
   } else {
     item.likes = Math.max(item.likes + (liked ? -1 : 1), 0);
     item.heat = liked ? Math.max(item.heat - 10, 60) : item.heat + 10;
@@ -474,13 +533,32 @@ async function toggleLike(item, key, li, btn) {
   else state.likeKeys.add(key);
   saveLikes();
 
-  paintLike(btn, item, !liked);
+  // 热度原地改，不重新整榜排序 —— 否则手上的那一行会在指头底下跳走。
+  // 榜单里那一行和讨论板里的原帖可能同时存在，所以两处都刷一遍。
+  refreshLikeViews(item);
+}
 
-  // 热度原地改，不重新整榜排序 —— 否则手上的那一行会在指头底下跳走
-  const h = li.querySelector(".heat");
-  if (h) {
-    h.innerHTML = FLAME;
-    h.appendChild(document.createTextNode(" " + fmtHeat(item.heat)));
+/* 把某一条的点赞状态同步到「榜单那一行」和「讨论板里的原帖」 */
+function refreshLikeViews(item) {
+  const liked = state.likeKeys.has(String(item.id));
+
+  const row = document.querySelector(
+    '#rankList .rank-item[data-item-id="' + String(item.id) + '"]'
+  );
+  if (row) {
+    const b = row.querySelector(".like");
+    if (b) paintLike(b, item, liked);
+
+    const h = row.querySelector(".heat");
+    if (h) {
+      h.innerHTML = FLAME;
+      h.appendChild(document.createTextNode(" " + fmtHeat(item.heat)));
+    }
+  }
+
+  if (state.discussId && String(state.discussId) === String(item.id)) {
+    const found = findItem(item.id);
+    if (found) renderDiscussOp(found);
   }
 }
 
@@ -626,6 +704,9 @@ function bindSubmit() {
 
 const LS_ADMIN_TOKEN = "hotsearch.adminToken.v1";
 const LS_ANN_OPEN = "hotsearch.announceOpen.v1";
+// 上次「读到哪一条公告」的时间点。存的是时间戳，不是条数 ——
+// 这样就算中间有人删了旧公告，也不会把没读的算成读过了。
+const LS_ANN_SEEN = "hotsearch.annSeen.v1";
 const ANN_TABLE = SB.announceTable || "announcements";
 
 const ANN_LEVELS = [
@@ -658,6 +739,75 @@ function readAnnOpen() {
 
 function writeAnnOpen(v) {
   try { localStorage.setItem(LS_ANN_OPEN, v ? "1" : "0"); } catch (e) { /* ignore */ }
+}
+
+/* ----- 未读提醒 -----
+   做法：这台设备记一个「上次读到什么时候」，比它新的公告就算未读。
+   已读只看两条：把通知列表展开看过一次，就全算读过了。
+
+   几个刻意的选择：
+   · 存时间点而不是「已读的那几条的编号」—— 公告被编辑过之后
+     updated_at 会变新，于是会自动重新变成未读，这是想要的效果。
+   · 用「已隐藏」的公告不参与计算，免得管理员自己存草稿
+     也在别人手机上弹出个红点。
+   · 第一次打开这个网站的访客，会看到所有公告都是未读 ——
+     这正是想让他注意到的：班里有几条通知还没看。 */
+
+function annStamp(a) { return a.updated_at || a.created_at || ""; }
+
+function annMs(a) {
+  const t = Date.parse(annStamp(a));
+  return isNaN(t) ? 0 : t;
+}
+
+function readAnnSeen() {
+  try { return localStorage.getItem(LS_ANN_SEEN) || ""; } catch (e) { return ""; }
+}
+
+function annSeenMs() {
+  const t = Date.parse(readAnnSeen());
+  return isNaN(t) ? 0 : t;
+}
+
+function visibleAnnounce() {
+  return (state.announce || []).filter(function (a) { return a.visible !== false; });
+}
+
+function unreadCount() {
+  const seen = annSeenMs();
+  return visibleAnnounce().filter(function (a) { return annMs(a) > seen; }).length;
+}
+
+/* 全标记成已读。返回是否真的变了，变了才需要重画红点。 */
+function markAnnounceRead() {
+  const list = visibleAnnounce();
+  if (!list.length) return false;
+
+  let bestMs = -1;
+  let best = "";
+  list.forEach(function (a) {
+    const t = annMs(a);
+    if (t > bestMs) { bestMs = t; best = annStamp(a); }
+  });
+
+  if (!best || bestMs <= annSeenMs()) return false;
+  try { localStorage.setItem(LS_ANN_SEEN, best); } catch (e) { /* 无痕模式忽略 */ }
+  return true;
+}
+
+/* 重画那个红点（不动公告栏其它部分） */
+function paintAnnounceBadge(n) {
+  const badge = document.getElementById("announceBadge");
+  if (!badge) return;
+  if (n > 0) {
+    badge.hidden = false;
+    badge.textContent = n > 99 ? "99+" : String(n);
+    badge.setAttribute("title", n + " 条没看过的通知");
+  } else {
+    badge.hidden = true;
+    badge.textContent = "";
+    badge.removeAttribute("title");
+  }
 }
 
 function pad2(n) { return String(n).padStart(2, "0"); }
@@ -750,6 +900,7 @@ function renderAnnounce() {
     // 但万一以后判断逻辑走岔，也不至于它单独露出来。
     const b = document.getElementById("announceBar");
     if (b) b.hidden = true;
+    paintAnnounceBadge(0);
     return;
   }
 
@@ -762,6 +913,11 @@ function renderAnnounce() {
   // 管理模式下列表整个摊开，不套滚动框
   sec.classList.toggle("is-admin", admin);
 
+  // 列表是摊开的，说明这些都摆在眼前了 → 直接算已读。
+  // 放在画红点之前，所以展开的那一下红点就消失了。
+  if (has && state.announceOpen) markAnnounceRead();
+  paintAnnounceBadge(unreadCount());
+
   /* 顶部那条 */
   bar.hidden = !has;
   if (has) {
@@ -773,14 +929,12 @@ function renderAnnounce() {
     lead.appendChild(el("b", "", top.title || "通知"));
     lead.appendChild(document.createTextNode(top.body || ""));
 
+    // 只有一条的时候也留一个展开按钮：一来那条长通知在手机上是
+    // 被截成一行显示的，展开才看得全；二来没有它就没法把未读清掉。
     const tg = document.getElementById("announceToggle");
-    if (list.length > 1 || admin) {
-      tg.hidden = false;
-      tg.setAttribute("aria-expanded", state.announceOpen ? "true" : "false");
-      tg.innerHTML = (state.announceOpen ? "收起" : "共 " + list.length + " 条") + " " + CHEV;
-    } else {
-      tg.hidden = true;
-    }
+    tg.hidden = !(has || admin);
+    tg.setAttribute("aria-expanded", state.announceOpen ? "true" : "false");
+    tg.innerHTML = (state.announceOpen ? "收起" : "共 " + list.length + " 条") + " " + CHEV;
   }
 
   /* 展开的列表 */
@@ -835,7 +989,6 @@ function announceItem(a, admin) {
 function toggleAnnounceOpen() {
   const list = state.announce || [];
   if (list.length === 0) return;
-  if (list.length < 2 && !state.announceAdmin) return;
   state.announceOpen = !state.announceOpen;
   writeAnnOpen(state.announceOpen);
   renderAnnounce();
@@ -1133,6 +1286,421 @@ async function bootAnnounce() {
   await refreshAnnouncePublic();
 }
 
+/* ============================================================
+   讨论板（每条热搜下面的评论）
+   ------------------------------------------------------------
+   每一条热搜都有自己的地址：#t/那条的编号
+   点标题、点整行、或者直接打开这个地址，都会开出来。
+   用地址来驱动的好处是「链接能发给别人」——
+   把 #t/12 发到班群里，同学点开看到的就是那一条的讨论。
+
+   读写规则和公告不一样：评论全班都能发，所以走的是表权限
+   「只能读、只能新增」；只有删不当评论才要管理口令。
+   ============================================================ */
+
+function countComments(itemId) {
+  const key = String(itemId);
+  let n = 0;
+  state.comments.forEach(function (c) {
+    if (String(c.item_id) === key) n++;
+  });
+  return n;
+}
+
+function cmtChipText(itemId) {
+  const n = countComments(itemId);
+  return n > 0 ? String(n) : "讨论";
+}
+
+/* 某条热搜下面所有评论，按时间从早到晚排（聊天那种顺序） */
+function commentsFor(itemId) {
+  const key = String(itemId);
+  return state.comments
+    .filter(function (c) { return String(c.item_id) === key; })
+    .sort(function (a, b) { return Date.parse(a.created_at) - Date.parse(b.created_at); });
+}
+
+/* 按编号把热搜找出来，顺带带上它属于哪一周、排第几名 */
+function findItem(itemId) {
+  const key = String(itemId);
+  for (let i = 0; i < state.weeks.length; i++) {
+    const wk = state.weeks[i];
+    for (let j = 0; j < wk.items.length; j++) {
+      if (String(wk.items[j].id) === key) {
+        return { item: wk.items[j], week: wk, rank: j + 1 };
+      }
+    }
+  }
+  return null;
+}
+
+/* 地址栏里的 #t/12 → "12" */
+function hashItemId() {
+  const m = String(location.hash || "").match(/^#t\/([A-Za-z0-9_\-.]+)$/);
+  return m ? decodeURIComponent(m[1]) : null;
+}
+
+/* ----- 开关 ----- */
+
+function openDiscuss(itemId) {
+  const target = "#t/" + encodeURIComponent(String(itemId));
+  if (location.hash === target) { applyDiscussHash(); return; }
+  state.discussPushed = true;      // 这一格历史是我们自己加的
+  location.hash = target;          // 赋值后浏览器会触发 hashchange，交给它渲染
+}
+
+function closeDiscuss() {
+  // 自己打开的 → 退一格历史。这样手机上的返回键和关闭按钮是同一回事。
+  if (state.discussPushed && location.hash) {
+    state.discussPushed = false;
+    history.back();
+    return;
+  }
+  // 是别人分享的链接直接打开的 → 把地址里的 #t/12 抹掉，
+  // 用 replaceState 而不是退历史，免得把人家上一页也顶掉。
+  if (location.hash) history.replaceState(null, "", location.pathname + location.search);
+  state.discussId = null;
+  renderDiscuss();
+}
+
+/* 地址一变就按地址来。
+   点链接、按返回键、直接从班群点进来，走的都是这一条路。 */
+function applyDiscussHash() {
+  const id = hashItemId();
+  if (!id) {
+    state.discussPushed = false;
+    state.discussId = null;
+  } else {
+    const found = findItem(id);
+    state.discussId = found ? String(found.item.id) : null;
+    if (!found) toast("这条热搜找不到了，可能已经被删掉");
+  }
+  renderDiscuss();
+}
+
+/* 打开时锁住背后那页的滚动，关掉再放开。
+   顺手补一段和滚动条等宽的右内边距，否则桌面端会左右抖一下。 */
+function lockScroll(on) {
+  if (on) {
+    const sw = window.innerWidth - document.documentElement.clientWidth;
+    document.body.style.overflow = "hidden";
+    document.body.style.paddingRight = sw > 0 ? sw + "px" : "";
+  } else {
+    document.body.style.overflow = "";
+    document.body.style.paddingRight = "";
+  }
+}
+
+/* ----- 渲染 ----- */
+
+function renderDiscuss() {
+  const layer = document.getElementById("discussLayer");
+  if (!layer) return;
+
+  const wasOpen = !layer.hidden;
+  const id = state.discussId;
+  const found = id ? findItem(id) : null;
+
+  if (!found) {
+    state.discussId = null;
+    layer.hidden = true;
+    lockScroll(false);
+    return;
+  }
+
+  layer.hidden = false;
+  lockScroll(true);
+
+  // 刚打开这一下：昵称沿用提交栏那份，输入框清空，滚到最上面
+  if (!wasOpen) {
+    prefillDiscussNick();
+    const scroller = document.getElementById("discussScroll");
+    if (scroller) scroller.scrollTop = 0;
+  }
+
+  document.getElementById("discussSub").textContent =
+    found.week.range + " · 第 " + found.rank + " 名";
+
+  renderDiscussOp(found);
+  renderComments(found);
+}
+
+/* 昵称和侧边栏的提交栏共用一份，谁填过都记得住 */
+function prefillDiscussNick() {
+  const box = document.getElementById("cmtNick");
+  if (box) {
+    try { box.value = localStorage.getItem(LS_NICK) || ""; } catch (e) { /* ignore */ }
+  }
+  const input = document.getElementById("cmtInput");
+  if (input) input.value = "";
+  const counter = document.getElementById("cmtCounter");
+  if (counter) counter.textContent = "0";
+}
+
+/* 最上面那块「榜单上原文」的引用 */
+function renderDiscussOp(found) {
+  const box = document.getElementById("discussOp");
+  if (!box) return;
+
+  const item = found.item;
+  box.innerHTML = "";
+
+  const top = el("div", "op-top");
+  const cat = el("span", "cat", item.category);
+  cat.setAttribute("data-cat", item.category);
+  top.appendChild(cat);
+  top.appendChild(el("span", "op-where", found.week.label + " · 第 " + found.rank + " 名"));
+  box.appendChild(top);
+
+  box.appendChild(el("p", "op-content", item.content));
+
+  const meta = el("div", "op-meta");
+
+  const heat = el("span", "heat");
+  heat.innerHTML = FLAME;
+  heat.appendChild(document.createTextNode(" " + fmtHeat(item.heat)));
+  meta.appendChild(heat);
+
+  meta.appendChild(el("span", "", "来自 " + item.nickname));
+
+  // 在讨论板里也能直接点赞，不用退出去
+  const btn = el("button", "like");
+  btn.type = "button";
+  paintLike(btn, item, state.likeKeys.has(String(item.id)));
+  btn.addEventListener("click", function () { toggleLike(item, btn); });
+  meta.appendChild(btn);
+
+  box.appendChild(meta);
+}
+
+function renderComments(found) {
+  const list = document.getElementById("cmtList");
+  const empty = document.getElementById("cmtEmpty");
+  const countBox = document.getElementById("cmtCount");
+  const modHint = document.getElementById("cmtModHint");
+
+  list.innerHTML = "";
+  const mine = commentsFor(found.item.id);
+  countBox.textContent = mine.length ? mine.length + " 条" : "还没有";
+
+  const mod = canModerate();
+  modHint.hidden = !mod;
+
+  // 评论表还没建（那段 SQL 没跑）—— 说清楚，别装作没评论
+  if (HAS_BACKEND && !state.commentsReady) {
+    empty.hidden = false;
+    empty.textContent = "评论功能还没开通：数据库那边还差一段脚本（supabase-setup-comments.sql）。";
+    return;
+  }
+
+  if (mine.length === 0) {
+    empty.hidden = false;
+    empty.textContent = HAS_BACKEND
+      ? "还没有人说话，第一条就是你的。"
+      : "预览版：还没接数据库，这里发的评论刷新就没了。";
+    return;
+  }
+
+  empty.hidden = true;
+  mine.forEach(function (c) { list.appendChild(commentItem(c, mod)); });
+}
+
+function commentItem(c, mod) {
+  const li = el("li", "cmt-item");
+
+  const head = el("div", "cmt-item-head");
+  head.appendChild(el("span", "cmt-nickname", c.nickname || "匿名同学"));
+  head.appendChild(el("span", "cmt-when", fmtWhen(c.created_at)));
+
+  if (mod) {
+    const del = el("button", "cmt-del", "删除");
+    del.type = "button";
+    del.addEventListener("click", function () { onCommentDelete(c); });
+    head.appendChild(del);
+  }
+  li.appendChild(head);
+
+  li.appendChild(el("p", "cmt-body", c.body || ""));
+  return li;
+}
+
+/* 有管理口令（或者已经进了管理模式）才把删除按钮摆出来。
+   真正能不能删还是数据库说了算 —— 这里只是别把按钮摆给全班看。 */
+function canModerate() {
+  return !!(state.announceAdmin || state.adminToken || readToken());
+}
+
+/* ----- 发评论 / 删评论 ----- */
+
+let cmtSending = false;
+
+async function onCommentSubmit(e) {
+  if (e) e.preventDefault();
+  if (cmtSending) return;
+
+  const input = document.getElementById("cmtInput");
+  const nickInput = document.getElementById("cmtNick");
+  const btn = document.getElementById("cmtSend");
+
+  const found = state.discussId ? findItem(state.discussId) : null;
+  if (!found) return;
+
+  const body = input.value.trim();
+  const nick = nickInput.value.trim() || "匿名同学";
+
+  if (!body) { toast("还没写内容"); input.focus(); return; }
+  if (body.length > 200) { toast("评论最多 200 字"); input.focus(); return; }
+  if (nick.length > 8) { toast("昵称最多 8 个字"); nickInput.focus(); return; }
+
+  if (HAS_BACKEND && !state.commentsReady) {
+    toast("评论功能还没开通，数据库那边还差一段脚本");
+    return;
+  }
+
+  // 昵称和提交栏共用一份，两边谁填过都记得住
+  try { localStorage.setItem(LS_NICK, nick); } catch (err) { /* ignore */ }
+  const sideNick = document.getElementById("nicknameInput");
+  if (sideNick) sideNick.value = nick;
+
+  cmtSending = true;
+  btn.disabled = true;
+  btn.textContent = "发送中…";
+
+  let row = null;
+  if (state.backendOk) {
+    try {
+      row = await postCommentToBackend(found.item.id, nick, body);
+    } catch (err) {
+      console.error(err);
+      cmtSending = false;
+      btn.disabled = false;
+      btn.textContent = "发送";
+      toast("评论没发出去：" + friendly(err));
+      return;
+    }
+  } else {
+    // 没接数据库时的本地演示，刷新就没了
+    row = {
+      id: "local-c-" + Date.now(),
+      item_id: found.item.id,
+      nickname: nick,
+      body: body,
+      created_at: new Date().toISOString()
+    };
+  }
+
+  if (row) state.comments.push(row);
+
+  cmtSending = false;
+  btn.disabled = false;
+  btn.textContent = "发送";
+  input.value = "";
+  document.getElementById("cmtCounter").textContent = "0";
+
+  renderComments(found);
+  paintCmtChips();                       // 榜单上那一行的评论数也在变
+
+  const scroller = document.getElementById("discussScroll");
+  if (scroller) scroller.scrollTop = scroller.scrollHeight;
+
+  toast(state.backendOk ? "发出去了" : "发出去了（预览版，刷新就没了）");
+}
+
+async function onCommentDelete(c) {
+  const tk = state.adminToken || readToken();
+  if (!tk) { toast("删评论要管理口令：先从页脚进「公告管理」"); return; }
+
+  const ok = window.confirm(
+    "确定删掉这条评论吗？\n\n「" + (c.nickname || "匿名") + "：" +
+    String(c.body || "").slice(0, 40) + "」\n\n删掉就找不回来了。"
+  );
+  if (!ok) return;
+
+  try {
+    await commentDeleteApi(tk, c.id);
+  } catch (err) {
+    console.error(err);
+    toast("删除失败：" + friendly(err));
+    return;
+  }
+
+  state.comments = state.comments.filter(function (x) {
+    return String(x.id) !== String(c.id);
+  });
+
+  const found = state.discussId ? findItem(state.discussId) : null;
+  if (found) renderComments(found);
+  paintCmtChips();
+  toast("已删除");
+}
+
+/* 把榜单上每行的评论数重画一遍（发完、删完之后） */
+function paintCmtChips() {
+  const rows = document.querySelectorAll("#rankList .rank-item[data-item-id]");
+  Array.prototype.forEach.call(rows, function (li) {
+    const chip = li.querySelector(".cmt-chip");
+    if (!chip) return;
+    chip.innerHTML = BUBBLE;
+    chip.appendChild(document.createTextNode(cmtChipText(li.getAttribute("data-item-id"))));
+  });
+}
+
+/* ----- 加载评论 ----- */
+
+async function refreshComments() {
+  if (!HAS_BACKEND) { state.commentsReady = false; return; }
+
+  try {
+    const rows = await loadCommentsFromBackend();
+    state.comments = Array.isArray(rows) ? rows : [];
+    state.commentsReady = true;
+  } catch (err) {
+    // 最常见就两种情况：评论表还没建（SQL 没跑）、或者网络不通。
+    // 都只是「评论这块用不了」，不该把榜单也带崩。
+    console.warn("评论加载失败", err);
+    state.commentsReady = false;
+  }
+}
+
+/* ----- 绑定 ----- */
+
+function bindDiscuss() {
+  document.getElementById("discussMask").addEventListener("click", closeDiscuss);
+  document.getElementById("discussClose").addEventListener("click", closeDiscuss);
+
+  // 整行都能点开 —— 手机上手指大，别逼人正好点在标题那几个字上。
+  // 点赞按钮和标题链接自己会处理，这里跳过它们。
+  document.getElementById("rankList").addEventListener("click", function (e) {
+    if (e.target.closest("button, a")) return;
+    const li = e.target.closest(".rank-item[data-item-id]");
+    if (li) openDiscuss(li.getAttribute("data-item-id"));
+  });
+
+  const input = document.getElementById("cmtInput");
+  input.addEventListener("input", function () {
+    document.getElementById("cmtCounter").textContent = String(input.value.length);
+  });
+
+  document.getElementById("cmtForm").addEventListener("submit", onCommentSubmit);
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && state.discussId) closeDiscuss();
+  });
+
+  window.addEventListener("hashchange", applyDiscussHash);
+
+  // 切回这个标签页时顺手拉一次最新数据。
+  // 这样那个未读红点才是真的「有新通知」，而不是「刷新了页面才知道」。
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState !== "visible" || !HAS_BACKEND) return;
+    if (!state.announceAdmin) refreshAnnouncePublic();
+    refreshComments().then(function () {
+      paintCmtChips();
+      if (state.discussId) renderDiscuss();
+    });
+  });
+}
+
 /* ---------- 加载 ---------- */
 
 function mockWeeks() {
@@ -1223,16 +1791,19 @@ async function boot() {
   renderCats();
   bindSubmit();
   bindAnnounce();
+  bindDiscuss();
 
   if (HAS_BACKEND) {
-    // 公告单独加载：就算这块出问题（比如还没建公告表），
-    // 榜单也照常显示，不会一起挂掉。
+    // 公告和评论都是各自单独加载的：哪一块出问题（比如对应的表还没建），
+    // 都只是那一块用不了，榜单照常显示，不会一起挂掉。
     await bootAnnounce();
+    await refreshComments();
 
     try {
       await reload();
       state.backendOk = true;
       refreshNote();
+      applyDiscussHash();
       return;
     } catch (err) {
       console.error(err);
@@ -1254,6 +1825,7 @@ async function boot() {
 
   renderTabs();
   renderList();
+  applyDiscussHash();
 }
 
 document.addEventListener("DOMContentLoaded", boot);

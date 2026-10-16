@@ -13,7 +13,7 @@
   就把这里的版本号一起改掉（比如 20261016 → 20261017），
   否则浏览器可能拿旧的脚本去配新的网页，页面就会报错。
 -->
-<link rel="stylesheet" href="./style.css?v=20261016c">
+<link rel="stylesheet" href="./style.css?v=20261016d">
 </head>
 <body>
 
@@ -49,6 +49,8 @@
           <path d="M15.8 9.4a3.7 3.7 0 0 1 0 5.2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
         </svg>
         公告
+        <!-- 有没看过的新通知时，这个红点会显示条数（位置在标签左上角） -->
+        <span class="announce-badge" id="announceBadge" hidden></span>
       </span>
       <p class="announce-lead" id="announceLead"></p>
       <button class="announce-toggle" id="announceToggle" type="button" aria-expanded="false"></button>
@@ -160,6 +162,7 @@
           <li>每一条起始 <b>60</b> 热度，被人点一次赞 <b>+10</b>；点错了<b>再点一次就能取消</b>。热度高的排前面。</li>
           <li>榜单<b>按周统计</b>：周一零点自动开新的一周，上周的榜会留在「上周」标签里，随时能翻回去看。</li>
           <li>同一周里热度<b>实时排序</b>，没有结算时间，随时可能变。</li>
+          <li><b>点一条热搜</b>就能进它的讨论板，评论的规则和上面一样：只写昵称、友善发言。</li>
           <li>只写昵称，不写同学的<b>真实姓名</b>，老师也一律用化名或外号。</li>
           <li>不写具体家庭情况、不放同学正脸照。</li>
           <li><b>友善优先</b>：不点名批评、不翻旧账。这条是底线，违反的会被直接删掉。</li>
@@ -177,10 +180,61 @@
 
 </div>
 
+<!-- ============ 讨论板（点某条热搜后从下面滑出来） ============ -->
+<div class="discuss" id="discussLayer" hidden>
+  <div class="discuss-mask" id="discussMask"></div>
+
+  <section class="discuss-panel" id="discussPanel" role="dialog" aria-modal="true"
+           aria-labelledby="discussTitle">
+
+    <header class="discuss-head">
+      <div class="discuss-head-text">
+        <h2 class="discuss-title" id="discussTitle">讨论板</h2>
+        <p class="discuss-sub" id="discussSub"></p>
+      </div>
+      <button class="discuss-close" id="discussClose" type="button" aria-label="关闭讨论板">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" aria-hidden="true">
+          <path d="M6.5 6.5 17.5 17.5M17.5 6.5 6.5 17.5" stroke="currentColor"
+                stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </header>
+
+    <div class="discuss-scroll" id="discussScroll">
+      <!-- 榜单上那一条的原文，放在最上面当引用 -->
+      <article class="op" id="discussOp"></article>
+
+      <div class="cmt-head">
+        <span class="cmt-head-title">评论</span>
+        <span class="cmt-head-count" id="cmtCount"></span>
+        <span class="cmt-head-mod" id="cmtModHint" hidden>管理模式：可以删掉不当评论</span>
+      </div>
+
+      <ul class="cmt-list" id="cmtList"></ul>
+      <p class="cmt-empty" id="cmtEmpty" hidden></p>
+    </div>
+
+    <form class="cmt-form" id="cmtForm" autocomplete="off">
+      <div class="cmt-nick-row">
+        <label class="cmt-label" for="cmtNick">昵称</label>
+        <input class="input cmt-nick" id="cmtNick" type="text" maxlength="8"
+               placeholder="不填视为匿名" autocomplete="off">
+        <span class="cmt-counter"><em id="cmtCounter">0</em>/200</span>
+      </div>
+      <div class="cmt-row">
+        <textarea class="input textarea cmt-input" id="cmtInput" rows="2" maxlength="200"
+                  placeholder="友善发言，不写真实姓名"></textarea>
+        <button class="btn-submit cmt-send" id="cmtSend" type="submit">发送</button>
+      </div>
+    </form>
+
+  </section>
+</div>
+
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-<script src="./config.js?v=20261016c"></script>
-<script src="./mock-data.js?v=20261016c"></script>
-<script src="./app.js?v=20261016c"></script>
+<script src="./config.js?v=20261016d"></script>
+<script src="./mock-data.js?v=20261016d"></script>
+<script src="./app.js?v=20261016d"></script>
 </body>
 </html>
