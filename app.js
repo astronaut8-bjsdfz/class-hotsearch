@@ -27,7 +27,15 @@ const state = {
   active: 0,
   likeKeys: new Set(),
   baseline: {},      // 上次查看时各条的排名，用来算升降箭头
-  backendOk: false
+  backendOk: false,
+  // 公告栏
+  announce: [],
+  announceAdmin: false,        // 是否处于管理模式
+  announceLoginOpen: false,    // 是否正在显示口令输入框
+  announceOpen: false,         // 通知列表是否展开
+  announceFormOpen: false,     // 发布表单是否展开
+  announceEditingId: null,     // 正在编辑哪一条（null = 新建）
+  adminToken: ""
 };
 
 /* ---------- 数据库连接层 ---------- */
@@ -473,6 +481,526 @@ function bindSubmit() {
   });
 }
 
+/* ============================================================
+   公告栏
+   ------------------------------------------------------------
+   读：普通访客直接读表，数据库的行级安全策略保证只能拿到
+       「显示中」的那些公告。
+   写：网页端对公告表没有任何写权限，必须调用数据库里那三个
+       带口令的函数（ann_save / ann_delete / ann_list）。
+       所以就算有人扒了源码，也发不出一条公告 —— 他没口令。
+   口令存在浏览器 localStorage 里，只在这台设备上生效。
+   ============================================================ */
+
+const LS_ADMIN_TOKEN = "hotsearch.adminToken.v1";
+const LS_ANN_OPEN = "hotsearch.announceOpen.v1";
+const ANN_TABLE = SB.announceTable || "announcements";
+
+const ANN_LEVELS = [
+  { key: "normal", label: "普通" },
+  { key: "important", label: "重要" },
+  { key: "urgent", label: "紧急" }
+];
+
+const CHEV = '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" aria-hidden="true">' +
+  '<path d="M6 9.5 12 15.5 18 9.5" stroke="currentColor" stroke-width="2.2" ' +
+  'stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+let annLevel = "normal";
+let annSaving = false;
+
+function readToken() {
+  try { return localStorage.getItem(LS_ADMIN_TOKEN) || ""; } catch (e) { return ""; }
+}
+
+function writeToken(t) {
+  try {
+    if (t) localStorage.setItem(LS_ADMIN_TOKEN, t);
+    else localStorage.removeItem(LS_ADMIN_TOKEN);
+  } catch (e) { /* 无痕模式忽略 */ }
+}
+
+function readAnnOpen() {
+  try { return localStorage.getItem(LS_ANN_OPEN) === "1"; } catch (e) { return false; }
+}
+
+function writeAnnOpen(v) {
+  try { localStorage.setItem(LS_ANN_OPEN, v ? "1" : "0"); } catch (e) { /* ignore */ }
+}
+
+function pad2(n) { return String(n).padStart(2, "0"); }
+
+function fmtWhen(iso) {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  const diff = (Date.now() - d.getTime()) / 1000;
+  if (diff < 60) return "刚刚";
+  if (diff < 3600) return Math.floor(diff / 60) + " 分钟前";
+  if (diff < 86400) return Math.floor(diff / 3600) + " 小时前";
+  if (diff < 172800) return "昨天 " + pad2(d.getHours()) + ":" + pad2(d.getMinutes());
+  return (d.getMonth() + 1) + "月" + d.getDate() + "日 " +
+         pad2(d.getHours()) + ":" + pad2(d.getMinutes());
+}
+
+/* 把数据库返回的错误信息抠成人话 */
+
+function friendly(err) {
+  const raw = String((err && err.message) || err || "");
+  const hit = raw.match(/\{[\s\S]*\}\s*$/);
+  if (hit) {
+    try {
+      const o = JSON.parse(hit[0]);
+      if (o && o.message) return o.message;
+    } catch (e) { /* 不是 JSON，往下走 */ }
+  }
+  if (/Failed to fetch|NetworkError|Load failed/i.test(raw)) return "网络不通，检查一下连接";
+  return raw.slice(0, 90) || "未知错误";
+}
+
+/* ----- 数据库读写 ----- */
+
+async function loadAnnouncements() {
+  return await sbFetch(
+    ANN_TABLE + "?select=id,created_at,updated_at,title,body,level,author,pinned,visible" +
+    "&order=pinned.desc,created_at.desc&limit=50"
+  );
+}
+
+async function annVerify(token) {
+  try {
+    const r = await sbFetch("rpc/ann_check", {
+      method: "POST",
+      body: JSON.stringify({ token: token })
+    });
+    return { ok: r === true, err: null };
+  } catch (e) {
+    return { ok: false, err: e.message };
+  }
+}
+
+async function annListAdmin(token) {
+  return await sbFetch("rpc/ann_list", {
+    method: "POST",
+    body: JSON.stringify({ token: token })
+  });
+}
+
+async function annSaveApi(payload) {
+  return await sbFetch("rpc/ann_save", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+async function annDeleteApi(token, id) {
+  return await sbFetch("rpc/ann_delete", {
+    method: "POST",
+    body: JSON.stringify({ token: token, p_id: id })
+  });
+}
+
+/* ----- 渲染 ----- */
+
+function renderAnnounce() {
+  const sec = document.getElementById("announceSection");
+  if (!sec) return;
+
+  const list = state.announce || [];
+  const admin = state.announceAdmin;
+  const loginOpen = state.announceLoginOpen && !admin;
+  const has = list.length > 0;
+
+  // 没有公告、也不在管理状态 → 整块不出现，页面跟以前一模一样
+  const show = HAS_BACKEND && (has || admin || loginOpen);
+  sec.hidden = !show;
+  if (!show) {
+    // 横幅顺手也收起来。父级已经 display:none 了，视觉上看不出差别，
+    // 但万一以后判断逻辑走岔，也不至于它单独露出来。
+    const b = document.getElementById("announceBar");
+    if (b) b.hidden = true;
+    return;
+  }
+
+  const bar = document.getElementById("announceBar");
+  const ul = document.getElementById("announceList");
+  const adminBar = document.getElementById("announceAdminBar");
+  const login = document.getElementById("adminLogin");
+  const form = document.getElementById("announceForm");
+
+  // 管理模式下列表整个摊开，不套滚动框
+  sec.classList.toggle("is-admin", admin);
+
+  /* 顶部那条 */
+  bar.hidden = !has;
+  if (has) {
+    const top = list[0];
+    sec.setAttribute("data-level", top.level || "normal");
+
+    const lead = document.getElementById("announceLead");
+    lead.innerHTML = "";
+    lead.appendChild(el("b", "", top.title || "通知"));
+    lead.appendChild(document.createTextNode(top.body || ""));
+
+    const tg = document.getElementById("announceToggle");
+    if (list.length > 1 || admin) {
+      tg.hidden = false;
+      tg.setAttribute("aria-expanded", state.announceOpen ? "true" : "false");
+      tg.innerHTML = (state.announceOpen ? "收起" : "共 " + list.length + " 条") + " " + CHEV;
+    } else {
+      tg.hidden = true;
+    }
+  }
+
+  /* 展开的列表 */
+  ul.hidden = !(has && state.announceOpen);
+  ul.innerHTML = "";
+  if (has && state.announceOpen) {
+    list.forEach(function (a) { ul.appendChild(announceItem(a, admin)); });
+  }
+
+  adminBar.hidden = !admin;
+  login.hidden = !loginOpen;
+  form.hidden = !(admin && state.announceFormOpen);
+}
+
+function announceItem(a, admin) {
+  const li = el("li", "announce-item");
+  li.setAttribute("data-level", a.level || "normal");
+  if (a.visible === false) li.classList.add("is-off");
+
+  const head = el("div", "announce-item-head");
+  head.appendChild(el("span", "announce-dot"));
+  head.appendChild(el("b", "announce-item-title", a.title || "通知"));
+  if (a.pinned) head.appendChild(el("span", "announce-pin", "置顶"));
+  head.appendChild(el("span", "announce-when", fmtWhen(a.created_at)));
+  li.appendChild(head);
+
+  li.appendChild(el("p", "announce-item-body", a.body || ""));
+
+  const foot = el("div", "announce-item-foot");
+  foot.appendChild(el("span", "", a.author || "班委会"));
+  if (a.visible === false) {
+    foot.appendChild(el("span", "announce-hidden-flag", "已隐藏"));
+  }
+  if (admin) {
+    foot.appendChild(el("span", "spacer"));
+    const edit = el("button", "announce-act", "编辑");
+    edit.type = "button";
+    edit.addEventListener("click", function () { openAnnounceForm(a); });
+    foot.appendChild(edit);
+
+    const del = el("button", "announce-act danger", "删除");
+    del.type = "button";
+    del.addEventListener("click", function () { onAnnDelete(a); });
+    foot.appendChild(del);
+  }
+  li.appendChild(foot);
+  return li;
+}
+
+/* ----- 展开 / 收起 ----- */
+
+function toggleAnnounceOpen() {
+  const list = state.announce || [];
+  if (list.length === 0) return;
+  if (list.length < 2 && !state.announceAdmin) return;
+  state.announceOpen = !state.announceOpen;
+  writeAnnOpen(state.announceOpen);
+  renderAnnounce();
+}
+
+/* ----- 口令与登录 ----- */
+
+function setAnnLevel(key) {
+  annLevel = key;
+  const row = document.getElementById("annLevelRow");
+  Array.from(row.children).forEach(function (c) {
+    c.setAttribute("aria-pressed", c.getAttribute("data-lv") === key ? "true" : "false");
+  });
+}
+
+function renderAnnLevels() {
+  const row = document.getElementById("annLevelRow");
+  row.innerHTML = "";
+  ANN_LEVELS.forEach(function (lv) {
+    const btn = el("button", "cat-pick lv-pick", lv.label);
+    btn.type = "button";
+    btn.setAttribute("data-lv", lv.key);
+    btn.setAttribute("aria-pressed", lv.key === annLevel ? "true" : "false");
+    btn.addEventListener("click", function () { setAnnLevel(lv.key); });
+    row.appendChild(btn);
+  });
+}
+
+function scrollToAnnounce() {
+  const sec = document.getElementById("announceSection");
+  if (sec) sec.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function onAdminBtn() {
+  if (!HAS_BACKEND) {
+    toast("这个页面还没接数据库，公告功能用不了");
+    return;
+  }
+
+  if (state.announceAdmin) {
+    openAnnounceForm(null);
+    return;
+  }
+
+  const saved = readToken();
+  if (saved) {
+    const r = await annVerify(saved);
+    if (r.ok) {
+      await enterAdmin(saved);
+      return;
+    }
+    writeToken("");  // 口令过期或改过了，清掉重新输
+  }
+
+  state.announceLoginOpen = true;
+  renderAnnounce();
+  scrollToAnnounce();
+  setTimeout(function () {
+    const i = document.getElementById("adminTokenInput");
+    if (i) i.focus();
+  }, 160);
+}
+
+async function onAdminLogin() {
+  const input = document.getElementById("adminTokenInput");
+  const tk = input.value.trim();
+  if (!tk) { toast("先输入管理口令"); input.focus(); return; }
+
+  const btn = document.getElementById("adminLoginBtn");
+  btn.disabled = true;
+  btn.textContent = "验证中…";
+
+  const r = await annVerify(tk);
+
+  btn.disabled = false;
+  btn.textContent = "进入";
+
+  if (!r.ok) {
+    if (r.err && /PGRST202|Could not find the function|404/i.test(r.err)) {
+      toast("还没建公告表，先把那段 SQL 跑一遍");
+    } else {
+      toast("口令不对，再检查一下（注意别带空格）");
+      input.select();
+    }
+    return;
+  }
+
+  if (document.getElementById("adminRemember").checked) writeToken(tk);
+  input.value = "";
+  await enterAdmin(tk);
+}
+
+async function enterAdmin(tk) {
+  state.adminToken = tk;
+  state.announceAdmin = true;
+  state.announceLoginOpen = false;
+  state.announceOpen = true;
+  writeAnnOpen(true);
+  await refreshAnnounceAdmin();
+  scrollToAnnounce();
+  toast("已进入管理模式");
+}
+
+async function onAdminLogout() {
+  state.announceAdmin = false;
+  state.adminToken = "";
+  state.announceFormOpen = false;
+  state.announceEditingId = null;
+  state.announceOpen = readAnnOpen();
+  await refreshAnnouncePublic();
+  toast("已退出管理模式");
+}
+
+async function refreshAnnounceAdmin() {
+  const tk = state.adminToken;
+  try {
+    const rows = await annListAdmin(tk);
+    state.announce = Array.isArray(rows) ? rows : [];
+  } catch (err) {
+    console.error(err);
+    toast("读取公告失败：" + friendly(err));
+  }
+  renderAnnounce();
+}
+
+async function refreshAnnouncePublic() {
+  try {
+    const rows = await loadAnnouncements();
+    state.announce = Array.isArray(rows) ? rows : [];
+  } catch (err) {
+    console.warn("公告加载失败", err);
+    state.announce = [];
+  }
+  renderAnnounce();
+}
+
+/* ----- 发布 / 修改 / 删除 ----- */
+
+function openAnnounceForm(a) {
+  if (!state.announceAdmin) return;
+
+  state.announceFormOpen = true;
+  state.announceEditingId = a ? a.id : null;
+
+  const title = document.getElementById("annTitle");
+  const body = document.getElementById("annBody");
+  const author = document.getElementById("annAuthor");
+  const saveBtn = document.getElementById("annSaveBtn");
+
+  document.getElementById("announceFormTitle").textContent =
+    a ? "修改这条公告" : "发布一条新公告";
+
+  title.value = a ? (a.title || "") : "";
+  body.value = a ? (a.body || "") : "";
+  if (a) author.value = a.author || "班委会";
+
+  document.getElementById("annPinned").checked = a ? !!a.pinned : false;
+  document.getElementById("annVisible").checked = a ? a.visible !== false : true;
+  document.getElementById("annCounter").textContent = String(body.value.length);
+  document.getElementById("annCancelBtn").hidden = !a;
+  saveBtn.textContent = a ? "保存修改" : "发布公告";
+
+  setAnnLevel(a ? (a.level || "normal") : "normal");
+
+  state.announceOpen = true;
+  writeAnnOpen(true);
+  renderAnnounce();
+  scrollToAnnounce();
+  setTimeout(function () { title.focus(); }, 160);
+}
+
+async function onAnnSave(e) {
+  if (e) e.preventDefault();
+  if (annSaving) return;
+
+  const tk = state.adminToken;
+  if (!tk) { toast("请先从页脚进入管理模式"); return; }
+
+  const body = document.getElementById("annBody").value.trim();
+  if (!body) {
+    toast("正文还空着，写一句吧");
+    document.getElementById("annBody").focus();
+    return;
+  }
+
+  const btn = document.getElementById("annSaveBtn");
+  const old = btn.textContent;
+  annSaving = true;
+  btn.disabled = true;
+  btn.textContent = "保存中…";
+
+  try {
+    await annSaveApi({
+      token: tk,
+      // 0 表示「新建一条」；具体数字表示修改那条。
+      // 不用 null 是因为 PostgREST 对 JSON null 参数的处理比较微妙，
+      // 传普通数字最稳，数据库那边也是按 p_id <= 0 判新增的。
+      p_id: state.announceEditingId == null ? 0 : state.announceEditingId,
+      p_title: document.getElementById("annTitle").value.trim(),
+      p_body: body,
+      p_level: annLevel,
+      p_author: document.getElementById("annAuthor").value.trim(),
+      p_pinned: document.getElementById("annPinned").checked,
+      p_visible: document.getElementById("annVisible").checked
+    });
+  } catch (err) {
+    console.error(err);
+    annSaving = false;
+    btn.disabled = false;
+    btn.textContent = old;
+    toast("保存失败：" + friendly(err));
+    return;
+  }
+
+  annSaving = false;
+  btn.disabled = false;
+  btn.textContent = old;
+
+  const wasEdit = state.announceEditingId != null;
+  state.announceFormOpen = false;
+  state.announceEditingId = null;
+  document.getElementById("annTitle").value = "";
+  document.getElementById("annBody").value = "";
+  document.getElementById("annCounter").textContent = "0";
+
+  await refreshAnnounceAdmin();
+  toast(wasEdit ? "公告已更新" : "公告已发布");
+}
+
+async function onAnnDelete(a) {
+  const tk = state.adminToken;
+  if (!tk) return;
+
+  const ok = window.confirm(
+    "确定删掉这条公告吗？\n\n「" + (a.title || "通知") + "」\n\n删掉就找不回来了。"
+  );
+  if (!ok) return;
+
+  try {
+    await annDeleteApi(tk, a.id);
+    await refreshAnnounceAdmin();
+    toast("已删除");
+  } catch (err) {
+    console.error(err);
+    toast("删除失败：" + friendly(err));
+  }
+}
+
+/* ----- 绑定与启动 ----- */
+
+function bindAnnounce() {
+  renderAnnLevels();
+
+  const bar = document.getElementById("announceBar");
+  bar.addEventListener("click", function (e) {
+    if (e.target.closest("button")) return;
+    toggleAnnounceOpen();
+  });
+
+  document.getElementById("announceToggle").addEventListener("click", function (e) {
+    e.stopPropagation();
+    toggleAnnounceOpen();
+  });
+
+  document.getElementById("adminBtn").addEventListener("click", onAdminBtn);
+  document.getElementById("annNewBtn").addEventListener("click", function () {
+    openAnnounceForm(null);
+  });
+  document.getElementById("annLogoutBtn").addEventListener("click", onAdminLogout);
+  document.getElementById("annForgetBtn").addEventListener("click", function () {
+    writeToken("");
+    state.adminToken = "";
+    toast("已清除这台设备记住的口令");
+  });
+  document.getElementById("annCancelBtn").addEventListener("click", function () {
+    state.announceFormOpen = false;
+    state.announceEditingId = null;
+    renderAnnounce();
+  });
+
+  const body = document.getElementById("annBody");
+  body.addEventListener("input", function () {
+    document.getElementById("annCounter").textContent = String(body.value.length);
+  });
+
+  document.getElementById("announceForm").addEventListener("submit", onAnnSave);
+  document.getElementById("adminLoginBtn").addEventListener("click", onAdminLogin);
+  document.getElementById("adminTokenInput").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") { e.preventDefault(); onAdminLogin(); }
+  });
+}
+
+async function bootAnnounce() {
+  state.announceOpen = readAnnOpen();
+  await refreshAnnouncePublic();
+}
+
 /* ---------- 加载 ---------- */
 
 function mockDays() {
@@ -539,8 +1067,13 @@ async function boot() {
   loadLikes();
   renderCats();
   bindSubmit();
+  bindAnnounce();
 
   if (HAS_BACKEND) {
+    // 公告单独加载：就算这块出问题（比如还没建公告表），
+    // 榜单也照常显示，不会一起挂掉。
+    await bootAnnounce();
+
     try {
       await reload();
       state.backendOk = true;

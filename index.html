@@ -33,6 +33,78 @@
     </div>
   </header>
 
+  <!-- ============ 公告栏 ============ -->
+  <section class="announce" id="announceSection" data-level="normal" hidden>
+
+    <div class="announce-bar" id="announceBar">
+      <span class="announce-tag">
+        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" aria-hidden="true">
+          <path d="M4.2 10.2v3.6a1.5 1.5 0 0 0 1.5 1.5h1.9l4.6 3.6V5.1L7.6 8.7H5.7a1.5 1.5 0 0 0-1.5 1.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+          <path d="M15.8 9.4a3.7 3.7 0 0 1 0 5.2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+        </svg>
+        公告
+      </span>
+      <p class="announce-lead" id="announceLead"></p>
+      <button class="announce-toggle" id="announceToggle" type="button" aria-expanded="false"></button>
+    </div>
+
+    <ol class="announce-list" id="announceList" hidden></ol>
+
+    <div class="announce-adminbar" id="announceAdminBar" hidden>
+      <button class="btn-ghost is-primary" id="annNewBtn" type="button">＋ 发布新公告</button>
+      <button class="btn-ghost" id="annLogoutBtn" type="button">退出管理</button>
+      <button class="btn-ghost danger" id="annForgetBtn" type="button">清除口令</button>
+    </div>
+
+    <div class="admin-login" id="adminLogin" hidden>
+      <p class="admin-login-hint">输入管理口令后，才能在这台设备上发布和修改公告。</p>
+      <div class="admin-login-row">
+        <input class="input" id="adminTokenInput" type="password" placeholder="管理口令" autocomplete="current-password">
+        <button class="btn-submit admin-login-btn" id="adminLoginBtn" type="button">进入</button>
+      </div>
+      <label class="check admin-login-remember">
+        <input type="checkbox" id="adminRemember" checked>
+        <span>在这台设备上记住，下次不用再输</span>
+      </label>
+    </div>
+
+    <form class="announce-form" id="announceForm" hidden autocomplete="off">
+      <p class="announce-form-title" id="announceFormTitle">发布一条新公告</p>
+
+      <label class="field">
+        <span class="field-label">标题</span>
+        <input class="input" id="annTitle" type="text" maxlength="20" placeholder="比如：明天上午调课（不填就是「通知」）">
+      </label>
+
+      <label class="field">
+        <span class="field-label">正文</span>
+        <textarea class="input textarea" id="annBody" rows="3" maxlength="300" placeholder="时间、地点、要带什么，说清楚就行"></textarea>
+        <span class="counter"><em id="annCounter">0</em>/300</span>
+      </label>
+
+      <div class="field">
+        <span class="field-label">紧急程度</span>
+        <div class="cat-row" id="annLevelRow"></div>
+      </div>
+
+      <label class="field">
+        <span class="field-label">署名</span>
+        <input class="input" id="annAuthor" type="text" maxlength="8" value="班委会">
+      </label>
+
+      <div class="announce-flags">
+        <label class="check"><input type="checkbox" id="annPinned"><span>置顶</span></label>
+        <label class="check"><input type="checkbox" id="annVisible" checked><span>在网页上显示</span></label>
+      </div>
+
+      <div class="announce-actions">
+        <button class="btn-submit" id="annSaveBtn" type="submit">发布公告</button>
+        <button class="btn-ghost" id="annCancelBtn" type="button" hidden>取消编辑</button>
+      </div>
+    </form>
+
+  </section>
+
   <main class="layout">
 
     <section class="card board" aria-labelledby="boardHeading">
@@ -93,6 +165,7 @@
 
   <footer class="foot">
     <p>这个页面只在知道链接的人之间流传，没有提交给任何搜索引擎收录。</p>
+    <p class="foot-admin-line"><button class="foot-admin" id="adminBtn" type="button">公告管理</button></p>
   </footer>
 
 </div>

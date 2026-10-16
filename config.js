@@ -21,6 +21,9 @@ window.HOTSEARCH_BACKEND = {
   anonKey: "sb_publishable_3Hj8gpHOwqcEAozNka_kFQ_GYgxyDOV",
 
   /* 表名，不用改 */
-  table: "hot_items"
+  table: "hot_items",
+
+  /* 公告表名，不用改 */
+  announceTable: "announcements"
 
 };
