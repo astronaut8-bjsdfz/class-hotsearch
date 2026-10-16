@@ -123,6 +123,15 @@ async function likeOnBackend(id) {
   });
 }
 
+// 取消点赞。跟加赞一样必须走数据库函数 ——
+// 网页端本来就没有修改数据的权限。
+async function unlikeOnBackend(id) {
+  return await sbFetch("rpc/remove_like", {
+    method: "POST",
+    body: JSON.stringify({ item_id: id })
+  });
+}
+
 /* ---------- 小工具 ---------- */
 
 const WEEK = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
@@ -285,6 +294,21 @@ function refreshNote() {
   }
 }
 
+/* ---------- 页面自检 ---------- */
+// 网页、样式、脚本是分开的四个文件，浏览器对它们的缓存又各管各的，
+// 偶尔会出现「网页是新的、脚本是旧的」这种错配。
+// 提前查一遍必需的元素在不在，好给出人话提示，而不是甩一串英文报错。
+const REQUIRED_IDS = [
+  "weekTabs", "rankList", "boardHeading", "boardNote",
+  "catRow", "nicknameInput", "contentInput", "submitBtn", "dataNote"
+];
+
+function missingParts() {
+  return REQUIRED_IDS.filter(function (id) {
+    return !document.getElementById(id);
+  });
+}
+
 /* ---------- 周切换 ---------- */
 
 function renderTabs() {
@@ -399,16 +423,17 @@ function renderList() {
     body.appendChild(sub);
     li.appendChild(body);
 
-    // 点赞
+    // 点赞（再点一次就取消）
     const liked = state.likeKeys.has(key);
     const btn = el("button", "like");
     btn.type = "button";
     btn.setAttribute("aria-pressed", liked ? "true" : "false");
+    btn.title = liked ? "再点一次取消点赞" : "点一下点赞";
     btn.innerHTML = HEART;
     btn.appendChild(document.createTextNode(" " + item.likes));
 
     btn.addEventListener("click", function () {
-      onLike(item, key, li, btn);
+      toggleLike(item, key, li, btn);
     });
 
     li.appendChild(btn);
@@ -416,42 +441,55 @@ function renderList() {
   });
 }
 
-/* ---------- 点赞 ---------- */
+/* ---------- 点赞 / 取消点赞 ---------- */
 
-async function onLike(item, key, li, btn) {
-  if (state.likeKeys.has(key)) {
-    toast("你已经点过赞了");
-    return;
-  }
+/* 按一下赞，再按一下取消。
+   只看按钮的红色填充和数字变化就能看出当前是哪一态。 */
+async function toggleLike(item, key, li, btn) {
+  const liked = state.likeKeys.has(key);   // 之前点过没
 
   if (state.backendOk) {
-    btn.disabled = true;
+    btn.disabled = true;                   // 防手快连点，中途不许重复提交
     try {
-      const newLikes = await likeOnBackend(item.id);
-      item.likes = (typeof newLikes === "number") ? newLikes : item.likes + 1;
-      item.heat += 10;
+      const n = liked ? await unlikeOnBackend(item.id)
+                      : await likeOnBackend(item.id);
+      // 服务端可能返回 null（比如取消时它那边已经是 0 了），那就本地算
+      item.likes = (typeof n === "number")
+        ? n
+        : Math.max(item.likes + (liked ? -1 : 1), 0);
+      item.heat = liked ? Math.max(item.heat - 10, 60) : item.heat + 10;
     } catch (err) {
       console.error(err);
       btn.disabled = false;
-      toast("点赞失败，检查一下网络再试");
+      toast(liked ? "取消失败，检查一下网络再试" : "点赞失败，检查一下网络再试");
       return;
     }
     btn.disabled = false;
   } else {
-    item.likes += 1;
-    item.heat += 10;
+    item.likes = Math.max(item.likes + (liked ? -1 : 1), 0);
+    item.heat = liked ? Math.max(item.heat - 10, 60) : item.heat + 10;
   }
 
-  state.likeKeys.add(key);
+  if (liked) state.likeKeys.delete(key);
+  else state.likeKeys.add(key);
   saveLikes();
 
-  btn.setAttribute("aria-pressed", "true");
+  paintLike(btn, item, !liked);
+
+  // 热度原地改，不重新整榜排序 —— 否则手上的那一行会在指头底下跳走
+  const h = li.querySelector(".heat");
+  if (h) {
+    h.innerHTML = FLAME;
+    h.appendChild(document.createTextNode(" " + fmtHeat(item.heat)));
+  }
+}
+
+/* 按最新数字重画点赞按钮 */
+function paintLike(btn, item, liked) {
+  btn.setAttribute("aria-pressed", liked ? "true" : "false");
+  btn.title = liked ? "再点一次取消点赞" : "点一下点赞";
   btn.innerHTML = HEART;
   btn.appendChild(document.createTextNode(" " + item.likes));
-
-  const h = li.querySelector(".heat");
-  h.innerHTML = FLAME;
-  h.appendChild(document.createTextNode(" " + fmtHeat(item.heat)));
 }
 
 function loadLikes() {
@@ -1169,6 +1207,18 @@ async function reload() {
 
 async function boot() {
   renderHeader();
+
+  // 文件和脚本版本对不上时，先给出能看懂的解释，再停下来，
+  // 免得后面一堆看不懂的报错把页面观感全毁了。
+  const missing = missingParts();
+  if (missing.length) {
+    setNote("error",
+      "页面没能正常加载：网页和脚本的版本对不上。" +
+      "按 Ctrl + F5 强制刷新一次就好（苹果电脑按 Option + Command + R）。" +
+      "刷完还是这样，就把括号里这段发给网页管理员：缺少 " + missing.join("、") + "。");
+    return;
+  }
+
   loadLikes();
   renderCats();
   bindSubmit();
@@ -1187,7 +1237,14 @@ async function boot() {
     } catch (err) {
       console.error(err);
       state.weeks = ensureThisWeek(mockWeeks());
-      setNote("error", "连接数据库失败，现在显示的是示例数据。错误信息：" + err.message);
+      const msg = String((err && err.message) || err);
+      // 「null / undefined」几乎总是文件版本错配，不是真的连不上数据库，
+      // 提示要分清楚，不然会白白折腾数据库半天。
+      const looksLikeMismatch = /null|undefined/i.test(msg);
+      setNote("error", looksLikeMismatch
+        ? "页面脚本出了点问题，现在显示的是示例数据。" +
+          "这多半是浏览器缓存了旧文件，按 Ctrl + F5 强制刷新一次。原始信息：" + msg
+        : "连不上数据库，现在显示的是示例数据。错误信息：" + msg);
     }
   } else {
     state.weeks = ensureThisWeek(mockWeeks());

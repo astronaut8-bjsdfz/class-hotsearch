@@ -7,7 +7,13 @@
 <meta name="referrer" content="no-referrer">
 <meta name="theme-color" content="#fff6f7">
 <title>班级热搜榜</title>
-<link rel="stylesheet" href="./style.css">
+<!--
+  ⚠️ 下面四个文件后面的 ?v= 版本号是「防缓存」用的，必须四个保持一致。
+  每次改动 style.css / config.js / mock-data.js / app.js 里的任何一个，
+  就把这里的版本号一起改掉（比如 20261016 → 20261017），
+  否则浏览器可能拿旧的脚本去配新的网页，页面就会报错。
+-->
+<link rel="stylesheet" href="./style.css?v=20261016c">
 </head>
 <body>
 
@@ -151,7 +157,7 @@
           <h2 class="card-title" id="rulesHeading">上榜规则</h2>
         </div>
         <ul class="rule-list">
-          <li>每一条起始 <b>60</b> 热度，被人点一次赞 <b>+10</b>，热度高的排前面。</li>
+          <li>每一条起始 <b>60</b> 热度，被人点一次赞 <b>+10</b>；点错了<b>再点一次就能取消</b>。热度高的排前面。</li>
           <li>榜单<b>按周统计</b>：周一零点自动开新的一周，上周的榜会留在「上周」标签里，随时能翻回去看。</li>
           <li>同一周里热度<b>实时排序</b>，没有结算时间，随时可能变。</li>
           <li>只写昵称，不写同学的<b>真实姓名</b>，老师也一律用化名或外号。</li>
@@ -173,8 +179,8 @@
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-<script src="./config.js"></script>
-<script src="./mock-data.js"></script>
-<script src="./app.js"></script>
+<script src="./config.js?v=20261016c"></script>
+<script src="./mock-data.js?v=20261016c"></script>
+<script src="./app.js?v=20261016c"></script>
 </body>
 </html>
