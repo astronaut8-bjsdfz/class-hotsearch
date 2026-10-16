@@ -20,13 +20,15 @@ const CONFIG = {
 
 const LS_LIKES = "hotsearch.likes.v2";
 const LS_NICK = "hotsearch.nickname.v1";
-const LS_SNAP = "hotsearch.rankSnap.v1";
+// v2：以前存的是「某一天的排名」，现在改成「每个周各存一份排名」
+const LS_SNAP = "hotsearch.rankSnap.v2";
+const SNAP_KEEP = 12;   // 只保留最近 12 周的名次快照，别让本地存储无限长大
 
 const state = {
-  days: [],
+  weeks: [],
   active: 0,
   likeKeys: new Set(),
-  baseline: {},      // 上次查看时各条的排名，用来算升降箭头
+  baselineByWeek: {},  // 每个周各自的「上次查看时的名次」，用来算升降箭头
   backendOk: false,
   // 公告栏
   announce: [],
@@ -66,15 +68,27 @@ async function sbFetch(path, opts) {
   return txt ? JSON.parse(txt) : null;
 }
 
-async function loadDaysFromBackend() {
+/* 同一个周里，热度高的排前面；热度一样时，后提交的排前面 */
+function sortItems(items) {
+  return items.sort(function (a, b) {
+    if (b.heat !== a.heat) return b.heat - a.heat;
+    return (Number(b.id) || 0) - (Number(a.id) || 0);
+  });
+}
+
+async function loadWeeksFromBackend() {
   const rows = await sbFetch(
     SB.table + "?select=id,day,nickname,content,category,heat,likes" +
-    "&order=day.desc,heat.desc&limit=800"
+    "&order=day.desc,heat.desc&limit=1000"
   );
+
+  // 数据库里每条都带着自己那天的日期（day），按它归并成周。
+  // 所以榜单是「按周看」还是「按天看」纯属显示方式，数据完全不用改。
   const map = new Map();
   (rows || []).forEach(function (r) {
-    if (!map.has(r.day)) map.set(r.day, []);
-    map.get(r.day).push({
+    const wk = weekStartOf(r.day);
+    if (!map.has(wk)) map.set(wk, []);
+    map.get(wk).push({
       id: r.id,
       nickname: r.nickname,
       content: r.content,
@@ -83,12 +97,14 @@ async function loadDaysFromBackend() {
       likes: r.likes
     });
   });
-  const days = [];
-  map.forEach(function (items, date) {
-    days.push({ date: date, label: dayLabel(date), items: items });
+
+  const weeks = [];
+  map.forEach(function (items, monday) {
+    // 接口按「日期倒序 + 同日内热度倒序」返回，跨天的那部分得自己再排一次
+    weeks.push(makeWeek(monday, sortItems(items)));
   });
-  days.sort(function (a, b) { return a.date < b.date ? 1 : -1; });
-  return days;
+  weeks.sort(function (a, b) { return a.key < b.key ? 1 : -1; });
+  return weeks;
 }
 
 async function submitToBackend(nickname, content, category) {
@@ -119,13 +135,74 @@ function toDateStr(d) {
 
 function todayStr() { return toDateStr(new Date()); }
 
-function dayLabel(dateStr) {
-  if (dateStr === todayStr()) return "今天";
-  const y = new Date();
-  y.setDate(y.getDate() - 1);
-  if (dateStr === toDateStr(y)) return "昨天";
-  const p = String(dateStr).split("-");
-  return Number(p[1]) + "月" + Number(p[2]) + "日";
+/* ---------- 周的计算 ----------
+   一个周从周一算到周日（周日是这一周的收尾）。
+   数据库里每条记录都带着自己那天的日期，所以「这条属于第几周」
+   是现算出来的，不用额外存字段，也不用改数据库。 */
+
+function parseDate(s) {
+  const p = String(s).split("-").map(Number);
+  return new Date(p[0], p[1] - 1, p[2]);
+}
+
+/* 传任意一天，返回它所在那一周的周一 */
+function weekStartOf(dateStr) {
+  const d = parseDate(dateStr);
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  return toDateStr(d);
+}
+
+function weekEndOf(monday) {
+  const d = parseDate(monday);
+  d.setDate(d.getDate() + 6);
+  return d;
+}
+
+/* 完整日期段：10月12日–10月18日 */
+function weekRange(monday) {
+  const a = parseDate(monday);
+  const b = weekEndOf(monday);
+  return (a.getMonth() + 1) + "月" + a.getDate() + "日–" +
+         (b.getMonth() + 1) + "月" + b.getDate() + "日";
+}
+
+/* 标签用的紧凑写法：10.12–10.18 */
+function weekTile(monday) {
+  const a = parseDate(monday);
+  const b = weekEndOf(monday);
+  return (a.getMonth() + 1) + "." + a.getDate() + "–" +
+         (b.getMonth() + 1) + "." + b.getDate();
+}
+
+/* 最近两周用「本周 / 上周」这种更好认的说法，更早的才用日期 */
+function isThisWeek(monday) { return monday === weekStartOf(todayStr()); }
+
+function isLastWeek(monday) {
+  const d = parseDate(weekStartOf(todayStr()));
+  d.setDate(d.getDate() - 7);
+  return monday === toDateStr(d);
+}
+
+function weekLabel(monday) {
+  if (isThisWeek(monday)) return "本周";
+  if (isLastWeek(monday)) return "上周";
+  return weekTile(monday);
+}
+
+function weekHeading(monday) {
+  if (isThisWeek(monday)) return "本周热搜";
+  if (isLastWeek(monday)) return "上周热搜";
+  return "热搜榜";
+}
+
+function makeWeek(monday, items) {
+  return {
+    key: monday,                    // 这一周周一的日期，当唯一标识
+    label: weekLabel(monday),       // 标签上显示的
+    range: weekRange(monday),       // 右上角的完整日期段
+    heading: weekHeading(monday),   // 榜单大标题
+    items: items || []
+  };
 }
 
 function fmtDate(d) {
@@ -179,7 +256,7 @@ function renderHeader() {
   document.title = CONFIG.siteTitle;
   document.getElementById("siteTitle").textContent = CONFIG.siteTitle;
   document.getElementById("className").textContent = CONFIG.className;
-  document.getElementById("boardNote").textContent = CONFIG.boardNote;
+  // 榜单标题和右上角的日期段会跟着选中的周变，交给 renderBoardHead() 处理
   document.getElementById("todayText").textContent = fmtDate(new Date());
 
   const left = daysUntil(CONFIG.countdownDate);
@@ -208,23 +285,34 @@ function refreshNote() {
   }
 }
 
-/* ---------- 日期切换 ---------- */
+/* ---------- 周切换 ---------- */
 
 function renderTabs() {
-  const wrap = document.getElementById("dayTabs");
+  const wrap = document.getElementById("weekTabs");
   wrap.innerHTML = "";
-  state.days.forEach(function (day, i) {
-    const btn = el("button", "tab", day.label);
+  state.weeks.forEach(function (wk, i) {
+    const btn = el("button", "tab", wk.label);
     btn.type = "button";
     btn.setAttribute("role", "tab");
+    btn.title = wk.range;   // 鼠标悬停能看到完整日期段
     btn.setAttribute("aria-selected", i === state.active ? "true" : "false");
     btn.addEventListener("click", function () {
+      if (state.active === i) return;
       state.active = i;
       renderTabs();
       renderList();
     });
     wrap.appendChild(btn);
   });
+}
+
+/* 榜单大标题 + 右上角日期段，都跟着当前选中的那一周走 */
+function renderBoardHead() {
+  const wk = state.weeks[state.active];
+  document.getElementById("boardHeading").textContent =
+    wk ? wk.heading : "热搜榜";
+  document.getElementById("boardNote").textContent =
+    wk ? (wk.range + " · " + CONFIG.boardNote) : CONFIG.boardNote;
 }
 
 /* ---------- 榜单 ---------- */
@@ -239,27 +327,32 @@ const HEART = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" aria-
 
 function renderList() {
   const list = document.getElementById("rankList");
-  const day = state.days[state.active];
+  const wk = state.weeks[state.active];
+  renderBoardHead();
   list.innerHTML = "";
-  if (!day) return;
+  if (!wk) return;
 
-  if (day.items.length === 0) {
+  // 升降箭头按周算：本周的条目跟「上次看本周时」比，
+  // 上周的条目就跟「上次看上周时」比，互不干扰。
+  const base = baselineFor(wk.key, wk.items);
+
+  if (wk.items.length === 0) {
     const empty = el("li", "empty-state");
-    empty.appendChild(el("p", "empty-title", "今天还没有人爆料"));
-    empty.appendChild(el("p", "empty-sub", "写一句，你就是今天的第一条热搜。"));
+    empty.appendChild(el("p", "empty-title", "这周还没有人爆料"));
+    empty.appendChild(el("p", "empty-sub", "写一句，你就是这周的第一条热搜。"));
     list.appendChild(empty);
     return;
   }
 
-  day.items.forEach(function (item, idx) {
+  wk.items.forEach(function (item, idx) {
     const rank = idx + 1;
     const key = String(item.id);
 
     // 升降：和上次查看时的名次比
     let delta = 0;
     let isNew = false;
-    if (state.baseline[key] != null) {
-      delta = state.baseline[key] - rank;
+    if (base[key] != null) {
+      delta = base[key] - rank;
     } else {
       isNew = true;
     }
@@ -452,7 +545,7 @@ function bindSubmit() {
       submitBtn.textContent = "提交上去";
     } else {
       // 没有数据库时的本地演示，刷新即消失
-      state.days[0].items.push({
+      state.weeks[0].items.push({
         id: "local-" + Date.now(),
         nickname: nick,
         content: text,
@@ -460,6 +553,7 @@ function bindSubmit() {
         heat: 62 + Math.floor(Math.random() * 20),
         likes: 0
       });
+      sortItems(state.weeks[0].items);
     }
 
     contentInput.value = "";
@@ -1003,61 +1097,72 @@ async function bootAnnounce() {
 
 /* ---------- 加载 ---------- */
 
-function mockDays() {
+function mockWeeks() {
   const data = window.HOTSEARCH_MOCK;
   if (!data || !Array.isArray(data.days)) return [];
-  return data.days.map(function (d) {
-    return {
-      date: d.date,
-      label: d.label,
-      items: d.items.map(function (it, i) {
-        return {
-          id: "mock-" + d.date + "-" + i,
-          nickname: it.nickname,
-          content: it.content,
-          category: it.category,
-          heat: it.heat,
-          likes: it.likes
-        };
-      })
-    };
+
+  // 假数据也是按天写的，同样按周归并一遍
+  const map = new Map();
+  data.days.forEach(function (d) {
+    const wk = weekStartOf(d.date);
+    if (!map.has(wk)) map.set(wk, []);
+    (d.items || []).forEach(function (it, i) {
+      map.get(wk).push({
+        id: "mock-" + d.date + "-" + i,
+        nickname: it.nickname,
+        content: it.content,
+        category: it.category,
+        heat: it.heat,
+        likes: it.likes
+      });
+    });
   });
+
+  const weeks = [];
+  map.forEach(function (items, monday) {
+    weeks.push(makeWeek(monday, sortItems(items)));
+  });
+  weeks.sort(function (a, b) { return a.key < b.key ? 1 : -1; });
+  return weeks;
 }
 
-function ensureToday(days) {
-  const t = todayStr();
-  for (let i = 0; i < days.length; i++) {
-    if (days[i].date === t) return days;
+/* 保证「本周」这个标签一定在，哪怕一条都还没提交 */
+function ensureThisWeek(weeks) {
+  const key = weekStartOf(todayStr());
+  for (let i = 0; i < weeks.length; i++) {
+    if (weeks[i].key === key) return weeks;
   }
-  days.unshift({ date: t, label: "今天", items: [] });
-  return days;
+  weeks.unshift(makeWeek(key, []));
+  return weeks;
 }
 
-function captureBaseline() {
-  // 读进上次记录的排名用于渲染箭头，同时把当前名次存下来供下次访问比较
-  const prev = readSnap();
-  const today = state.days[0];
+/* 读某个周上次查看时的名次，同时把这次的名次存下来供下次比较。
+   页面打开期间只算一次，之后切换标签、点赞刷新都用同一份，
+   否则箭头会比着比着全变成「持平」。 */
+function baselineFor(weekKey, items) {
+  if (state.baselineByWeek[weekKey]) return state.baselineByWeek[weekKey];
+
+  const all = readSnap();
+  const prev = all[weekKey] || {};
   const cur = {};
-  if (today) {
-    today.items.forEach(function (it, i) { cur[String(it.id)] = i + 1; });
-  }
+  items.forEach(function (it, i) { cur[String(it.id)] = i + 1; });
 
-  // 第一次访问没有历史可比，就按「名次没变化」处理，
-  // 否则所有条目都会被标记成「新」，看着像出 bug。
-  if (Object.keys(prev).length === 0) {
-    state.baseline = Object.assign({}, cur);
-  } else {
-    state.baseline = prev;
-  }
+  // 第一次看这一周，没有历史可比，就按「名次没变化」处理，
+  // 否则整页条目都会被标成「新上榜」，看着像出 bug。
+  const base = Object.keys(prev).length === 0 ? Object.assign({}, cur) : prev;
+  state.baselineByWeek[weekKey] = base;
 
-  writeSnap(cur);
+  all[weekKey] = cur;
+  const keys = Object.keys(all).sort();
+  while (keys.length > SNAP_KEEP) { delete all[keys.shift()]; }
+  writeSnap(all);
+
+  return base;
 }
 
 async function reload() {
-  const days = ensureToday(await loadDaysFromBackend());
-  state.days = days;
+  state.weeks = ensureThisWeek(await loadWeeksFromBackend());
   state.active = 0;
-  captureBaseline();
   renderTabs();
   renderList();
 }
@@ -1081,16 +1186,15 @@ async function boot() {
       return;
     } catch (err) {
       console.error(err);
-      state.days = ensureToday(mockDays());
+      state.weeks = ensureThisWeek(mockWeeks());
       setNote("error", "连接数据库失败，现在显示的是示例数据。错误信息：" + err.message);
     }
   } else {
-    state.days = ensureToday(mockDays());
+    state.weeks = ensureThisWeek(mockWeeks());
     setNote("preview",
       "当前是预览版：还没接数据库，提交的内容刷新就会消失，榜单上的也只是示例数据。");
   }
 
-  captureBaseline();
   renderTabs();
   renderList();
 }

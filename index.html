@@ -109,11 +109,11 @@
 
     <section class="card board" aria-labelledby="boardHeading">
       <div class="card-head">
-        <h2 class="card-title" id="boardHeading">今日热搜</h2>
+        <h2 class="card-title" id="boardHeading">本周热搜</h2>
         <span class="card-note" id="boardNote"></span>
       </div>
 
-      <div class="tabs" id="dayTabs" role="tablist" aria-label="选择日期"></div>
+      <div class="tabs" id="weekTabs" role="tablist" aria-label="选择周"></div>
 
       <ol class="rank-list" id="rankList"></ol>
     </section>
@@ -127,11 +127,11 @@
 
         <label class="field">
           <span class="field-label">我的昵称</span>
-          <input class="input" id="nicknameInput" type="text" maxlength="8" placeholder="比如：小满、十七" autocomplete="off">
+          <input class="input" id="nicknameInput" type="text" maxlength="8" placeholder="比如：航、hh（不填视为匿名）" autocomplete="off">
         </label>
 
         <label class="field">
-          <span class="field-label">今天班里发生了什么</span>
+          <span class="field-label">班里发生了什么</span>
           <textarea class="input textarea" id="contentInput" rows="3" maxlength="30" placeholder="一句话讲清楚，越具体越容易上榜"></textarea>
           <span class="counter"><em id="counterNum">0</em>/30</span>
         </label>
@@ -152,7 +152,8 @@
         </div>
         <ul class="rule-list">
           <li>每一条起始 <b>60</b> 热度，被人点一次赞 <b>+10</b>，热度高的排前面。</li>
-          <li>榜单按热度<b>实时排序</b>，没有结算时间，随时可能变。</li>
+          <li>榜单<b>按周统计</b>：周一零点自动开新的一周，上周的榜会留在「上周」标签里，随时能翻回去看。</li>
+          <li>同一周里热度<b>实时排序</b>，没有结算时间，随时可能变。</li>
           <li>只写昵称，不写同学的<b>真实姓名</b>，老师也一律用化名或外号。</li>
           <li>不写具体家庭情况、不放同学正脸照。</li>
           <li><b>友善优先</b>：不点名批评、不翻旧账。这条是底线，违反的会被直接删掉。</li>
