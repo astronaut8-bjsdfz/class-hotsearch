@@ -20,6 +20,11 @@ const CONFIG = {
 
 const LS_LIKES = "hotsearch.likes.v2";
 const LS_NICK = "hotsearch.nickname.v1";
+// 意见箱用「这台设备自己生成的一把随机钥匙」来认身份，第一次打开时生成，
+// 之后一直用它。存在本地，不上传别处 —— 详见下面「私信意见箱」那一节。
+const LS_INBOX_KEY = "hotsearch.inboxKey.v1";
+// 上次「读到管理员哪条回复」的时间点，用来算有没有新回复
+const LS_INBOX_SEEN = "hotsearch.inboxSeen.v1";
 // v2：以前存的是「某一天的排名」，现在改成「每个周各存一份排名」
 const LS_SNAP = "hotsearch.rankSnap.v2";
 const SNAP_KEEP = 12;   // 只保留最近 12 周的名次快照，别让本地存储无限长大
@@ -42,7 +47,16 @@ const state = {
   comments: [],          // 全部评论（一次取回来，既算条数也用来渲染）
   commentsReady: false,  // 评论接口通不通；评论表还没建时是 false
   discussId: null,       // 正在看哪一条热搜的讨论板
-  discussPushed: false   // 讨论板是我们自己打开的吗（决定关闭时退不退历史）
+  discussPushed: false,  // 讨论板是我们自己打开的吗（决定关闭时退不退历史）
+  // 私信意见箱
+  inbox: [],             // 普通模式＝我投的；管理模式＝全部
+  inboxOpen: false,
+  inboxReady: true,      // 接口通不通；意见表还没建时是 false
+  inboxErr: "",          // 不通时给人看的原因
+  inboxPushed: false,    // 意见箱是我们自己打开的吗
+  inboxSending: false,
+  inboxFilter: "all",    // 管理模式下的筛选：all | todo
+  inboxPlainKey: ""      // 非无痕环境下算出来的设备钥匙（缓存一下，别每次重算）
 };
 
 /* ---------- 数据库连接层 ---------- */
@@ -165,6 +179,48 @@ async function postCommentToBackend(itemId, nickname, body) {
 
 async function commentDeleteApi(token, id) {
   return await sbFetch("rpc/comment_delete", {
+    method: "POST",
+    body: JSON.stringify({ token: token, p_id: id })
+  });
+}
+
+/* ---------- 私信意见箱（数据库函数）----------
+   这张表对网页端是**完全封闭**的：连读的权限都没有，一个策略也没建。
+   所以这里没有一个 fetch 是冲着表去的，全部走函数。
+   函数里再按「设备钥匙」和「管理口令」过滤。 */
+
+async function opinionAddApi(key, nickname, body) {
+  return await sbFetch("rpc/opinion_add", {
+    method: "POST",
+    body: JSON.stringify({ p_key: key, p_nick: nickname, p_body: body })
+  });
+}
+
+// 只取「我这把钥匙投的那几条」。钥匙不对就是空列表。
+async function opinionMineApi(key) {
+  return await sbFetch("rpc/opinion_mine", {
+    method: "POST",
+    body: JSON.stringify({ p_key: key })
+  });
+}
+
+// 管理员：全部。函数里会用 ann_check 校验口令，口令不对直接报错。
+async function opinionListApi(token) {
+  return await sbFetch("rpc/opinion_list", {
+    method: "POST",
+    body: JSON.stringify({ token: token })
+  });
+}
+
+async function opinionReplyApi(token, id, reply) {
+  return await sbFetch("rpc/opinion_reply", {
+    method: "POST",
+    body: JSON.stringify({ token: token, p_id: id, p_reply: reply })
+  });
+}
+
+async function opinionDeleteApi(token, id) {
+  return await sbFetch("rpc/opinion_delete", {
     method: "POST",
     body: JSON.stringify({ token: token, p_id: id })
   });
@@ -340,7 +396,9 @@ const REQUIRED_IDS = [
   "weekTabs", "rankList", "boardHeading", "boardNote",
   "catRow", "nicknameInput", "contentInput", "submitBtn", "dataNote",
   "announceBadge", "discussLayer", "discussOp", "cmtList", "cmtForm",
-  "cmtNick", "cmtInput"
+  "cmtNick", "cmtInput",
+  "inboxBtn", "inboxBadge", "inboxLayer", "inboxList", "inboxNote",
+  "inboxForm", "inboxNick", "inboxBody"
 ];
 
 function missingParts() {
@@ -964,7 +1022,7 @@ function announceItem(a, admin) {
   li.appendChild(el("p", "announce-item-body", a.body || ""));
 
   const foot = el("div", "announce-item-foot");
-  foot.appendChild(el("span", "", a.author || "班委会"));
+  foot.appendChild(el("span", "", a.author || "管理员"));
   if (a.visible === false) {
     foot.appendChild(el("span", "announce-hidden-flag", "已隐藏"));
   }
@@ -1088,6 +1146,11 @@ async function enterAdmin(tk) {
   state.announceOpen = true;
   writeAnnOpen(true);
   await refreshAnnounceAdmin();
+  // 进了管理模式，意见箱那边看到的东西整个换了：
+  // 从「我投的」变成「全班投的」。得重新取一遍，不能拿旧的凑合。
+  state.inboxFilter = "all";
+  await refreshInbox();
+  renderInbox();
   scrollToAnnounce();
   toast("已进入管理模式");
 }
@@ -1099,6 +1162,10 @@ async function onAdminLogout() {
   state.announceEditingId = null;
   state.announceOpen = readAnnOpen();
   await refreshAnnouncePublic();
+  // 退出后意见箱要退回「只看自己的」
+  state.inboxFilter = "all";
+  await refreshInbox();
+  renderInbox();
   toast("已退出管理模式");
 }
 
@@ -1143,7 +1210,7 @@ function openAnnounceForm(a) {
 
   title.value = a ? (a.title || "") : "";
   body.value = a ? (a.body || "") : "";
-  if (a) author.value = a.author || "班委会";
+  if (a) author.value = a.author || "管理员";
 
   document.getElementById("annPinned").checked = a ? !!a.pinned : false;
   document.getElementById("annVisible").checked = a ? a.visible !== false : true;
@@ -1344,7 +1411,7 @@ function hashItemId() {
 
 function openDiscuss(itemId) {
   const target = "#t/" + encodeURIComponent(String(itemId));
-  if (location.hash === target) { applyDiscussHash(); return; }
+  if (location.hash === target) { applyHash(); return; }
   state.discussPushed = true;      // 这一格历史是我们自己加的
   location.hash = target;          // 赋值后浏览器会触发 hashchange，交给它渲染
 }
@@ -1358,27 +1425,45 @@ function closeDiscuss() {
   }
   // 是别人分享的链接直接打开的 → 把地址里的 #t/12 抹掉，
   // 用 replaceState 而不是退历史，免得把人家上一页也顶掉。
-  if (location.hash) history.replaceState(null, "", location.pathname + location.search);
+  // 只在确实是 #t/ 的时候动手，别顺手把意见箱的 #box 也抹了。
+  if (hashItemId()) history.replaceState(null, "", location.pathname + location.search);
   state.discussId = null;
   renderDiscuss();
 }
 
-/* 地址一变就按地址来。
-   点链接、按返回键、直接从班群点进来，走的都是这一条路。 */
-function applyDiscussHash() {
-  const id = hashItemId();
-  if (!id) {
-    state.discussPushed = false;
+/* 地址一变就按地址来。点链接、按返回键、直接从班群点进来，
+   还有意见箱，走的都是这一条路。
+
+   地址里一共只可能有三种状态，所以这里一次全处理掉：
+     #t/12  → 打开 12 号热搜的讨论板
+     #box   → 打开私信意见箱
+     其它    → 两个都关着
+   两个弹层互斥，是因为它们都盖着整屏，本来就不可能同时开着。 */
+function applyHash() {
+  const h = String(location.hash || "");
+
+  if (h === "#box") {
     state.discussId = null;
+    state.inboxOpen = true;
   } else {
-    const found = findItem(id);
-    state.discussId = found ? String(found.item.id) : null;
-    if (!found) toast("这条热搜找不到了，可能已经被删掉");
+    state.inboxOpen = false;
+
+    const id = hashItemId();
+    if (!id) {
+      state.discussPushed = false;
+      state.discussId = null;
+    } else {
+      const found = findItem(id);
+      state.discussId = found ? String(found.item.id) : null;
+      if (!found) toast("这条热搜找不到了，可能已经被删掉");
+    }
   }
+
   renderDiscuss();
+  renderInbox();
 }
 
-/* 打开时锁住背后那页的滚动，关掉再放开。
+/* 打开弹层时锁住背后那页的滚动，关掉再放开。
    顺手补一段和滚动条等宽的右内边距，否则桌面端会左右抖一下。 */
 function lockScroll(on) {
   if (on) {
@@ -1389,6 +1474,13 @@ function lockScroll(on) {
     document.body.style.overflow = "";
     document.body.style.paddingRight = "";
   }
+}
+
+/* 现在到底该不该锁滚动，统一由这里算。
+   以前是每个弹层自己喊「锁」或「放」，两个弹层一接力就会算错 ——
+   比如意见箱刚打开、紧接着讨论板那边喊了一声「放」，背后就滚起来了。 */
+function syncScrollLock() {
+  lockScroll(!!state.discussId || !!state.inboxOpen);
 }
 
 /* ----- 渲染 ----- */
@@ -1404,12 +1496,12 @@ function renderDiscuss() {
   if (!found) {
     state.discussId = null;
     layer.hidden = true;
-    lockScroll(false);
+    syncScrollLock();
     return;
   }
 
   layer.hidden = false;
-  lockScroll(true);
+  syncScrollLock();
 
   // 刚打开这一下：昵称沿用提交栏那份，输入框清空，滚到最上面
   if (!wasOpen) {
@@ -1687,7 +1779,7 @@ function bindDiscuss() {
     if (e.key === "Escape" && state.discussId) closeDiscuss();
   });
 
-  window.addEventListener("hashchange", applyDiscussHash);
+  window.addEventListener("hashchange", applyHash);
 
   // 切回这个标签页时顺手拉一次最新数据。
   // 这样那个未读红点才是真的「有新通知」，而不是「刷新了页面才知道」。
@@ -1698,6 +1790,522 @@ function bindDiscuss() {
       paintCmtChips();
       if (state.discussId) renderDiscuss();
     });
+    // 意见箱也顺手刷一下：管理员刚回了话的话，红点该当场就亮起来
+    refreshInbox().then(function () {
+      if (state.inboxOpen) renderInbox();
+    });
+  });
+}
+
+/* ============================================================
+   私信意见箱（右上角那个信封）
+   ------------------------------------------------------------
+   它和这个网页上别的东西都不一样：内容只给「本人 + 管理员」看。
+
+   静态网页没有登录，那怎么认「这条是你投的」？
+   → 每台设备第一次打开时，自己随机生成一串 32 位十六进制（128 位随机数），
+     存在这台设备的浏览器里，叫「设备钥匙」。投意见时把它一起交上去，
+     读的时候只按它取自己的那几条。128 位猜不出来，所以别人翻不到你的意见箱。
+
+   数据库那边对这张表是**完全封闭**的（连读的权限都没有，一个策略也没建），
+   所有读写都必须走函数，函数里再按钥匙过滤。
+   所以这个功能的安全性不靠前端 —— 前端就算被人整个改掉，
+   也读不出别人的东西，因为接口压根不给他这个能力。
+
+   ⚠️ 代价（页面上也写了，不能瞒着同学）：
+     钥匙只存在这台设备上。换手机、换浏览器、清了浏览器数据，
+     之前投的意见就找不回来了 —— 我们没有任何办法替人认领。
+   ============================================================ */
+
+/* ----- 设备钥匙 ----- */
+
+function randomKey() {
+  const buf = new Uint8Array(16);
+  if (window.crypto && window.crypto.getRandomValues) {
+    window.crypto.getRandomValues(buf);
+  } else {
+    // 极老的浏览器兜底。安全性差一些，但总比没有强。
+    for (let i = 0; i < 16; i++) buf[i] = Math.floor(Math.random() * 256);
+  }
+  let s = "";
+  for (let i = 0; i < 16; i++) s += buf[i].toString(16).padStart(2, "0");
+  return s;
+}
+
+function inboxKey() {
+  if (state.inboxPlainKey) return state.inboxPlainKey;
+
+  let k = "";
+  try {
+    k = localStorage.getItem(LS_INBOX_KEY) || "";
+    if (!/^[0-9a-f]{32}$/.test(k)) {
+      k = randomKey();
+      localStorage.setItem(LS_INBOX_KEY, k);
+    }
+  } catch (e) {
+    // 无痕模式存不住东西：临时给一把，本次会话内有效，刷新页面就换新的。
+    // 这种模式下意见箱只能用一次，页面上有提示。
+    k = "tmp" + randomKey();
+  }
+
+  state.inboxPlainKey = k;
+  return k;
+}
+
+/* ----- 有没有新回复 ----- */
+
+function inboxSeenMs() {
+  let raw = "";
+  try { raw = localStorage.getItem(LS_INBOX_SEEN) || ""; } catch (e) { /* ignore */ }
+  const t = Date.parse(raw);
+  return isNaN(t) ? 0 : t;
+}
+
+/* 把「我收到的回复」全算成看过。
+   水位取的是「我收到的回复里最新的那个时间」，不是「现在」——
+   万一这台设备的时钟比服务器慢，取「现在」会让刚看过的回复一直挂着未读。 */
+function markInboxRead() {
+  let best = 0;
+  let stamp = "";
+  (state.inbox || []).forEach(function (o) {
+    if (!o.replied_at) return;
+    const t = Date.parse(o.replied_at);
+    if (!isNaN(t) && t > best) { best = t; stamp = o.replied_at; }
+  });
+  if (!stamp || best <= inboxSeenMs()) return false;
+  try { localStorage.setItem(LS_INBOX_SEEN, stamp); } catch (e) { /* 无痕模式忽略 */ }
+  return true;
+}
+
+/* 红点上的数字：
+   普通模式 = 管理员回过、我还没看过的回复有几条；
+   管理模式 = 还没回复的意见有几条（那才是管理员要干的活）。 */
+function inboxBadgeCount() {
+  const list = state.inbox || [];
+
+  if (state.announceAdmin) {
+    return list.filter(function (o) { return !o.reply; }).length;
+  }
+
+  const seen = inboxSeenMs();
+  return list.filter(function (o) {
+    if (!o.replied_at) return false;
+    const t = Date.parse(o.replied_at);
+    return !isNaN(t) && t > seen;
+  }).length;
+}
+
+function paintInboxBadge(n) {
+  const badge = document.getElementById("inboxBadge");
+  if (!badge) return;
+
+  if (n > 0) {
+    badge.hidden = false;
+    badge.textContent = n > 99 ? "99+" : String(n);
+    badge.setAttribute("title",
+      state.announceAdmin ? n + " 条意见还没回复" : n + " 条新回复");
+  } else {
+    badge.hidden = true;
+    badge.textContent = "";
+    badge.removeAttribute("title");
+  }
+}
+
+/* ----- 数据库读写 ----- */
+
+async function refreshInbox() {
+  if (!HAS_BACKEND) {
+    // 预览版：没接数据库，这一块整个不开放
+    state.inbox = [];
+    state.inboxReady = false;
+    state.inboxErr = "";
+    paintInboxBadge(0);
+    return;
+  }
+
+  const admin = !!state.announceAdmin;
+
+  try {
+    const rows = admin
+      ? await opinionListApi(state.adminToken || readToken())
+      : await opinionMineApi(inboxKey());
+    state.inbox = Array.isArray(rows) ? rows : [];
+    state.inboxReady = true;
+    state.inboxErr = "";
+  } catch (err) {
+    // 最常见的两种情况：意见表还没建（那段 SQL 没跑）、或者网络不通。
+    // 都只是「意见箱这块用不了」，不该把榜单也带崩，所以在这里咽掉。
+    console.warn("意见箱加载失败", err);
+    state.inbox = [];
+    state.inboxReady = false;
+    state.inboxErr = friendly(err);
+  }
+
+  paintInboxBadge(state.inboxReady ? inboxBadgeCount() : 0);
+}
+
+/* ----- 开关 ----- */
+
+function openInbox() {
+  if (location.hash === "#box") { applyHash(); return; }
+  state.inboxPushed = true;
+  location.hash = "#box";
+}
+
+function closeInbox() {
+  // 自己按开的 → 退一格历史，这样手机返回键和关闭按钮是同一回事
+  if (state.inboxPushed && location.hash === "#box") {
+    state.inboxPushed = false;
+    history.back();
+    return;
+  }
+  // 别人分享的 #box 直接进来的（虽然分享这个没意义）→ 抹掉地址，别退历史
+  if (location.hash === "#box") {
+    history.replaceState(null, "", location.pathname + location.search);
+  }
+  state.inboxOpen = false;
+  renderInbox();
+}
+
+/* ----- 渲染 ----- */
+
+function renderInboxNote(admin) {
+  const box = document.getElementById("inboxNote");
+  if (!box) return;
+
+  if (!HAS_BACKEND) {
+    box.textContent = "预览版：还没接数据库，意见箱暂时用不了。";
+    return;
+  }
+
+  if (!state.inboxReady) {
+    box.textContent =
+      "意见箱暂时用不了。多半是数据库那边还差一段脚本" +
+      "（supabase-setup-opinions.sql）；如果之前一直好好的，那就是网络不通。" +
+      "原始信息：" + (state.inboxErr || "未知");
+    return;
+  }
+
+  box.textContent = admin
+    ? "这里能看到全班投的意见。回复之后，只有投这条意见的那台设备上能看见你的回复。"
+    : "这里只有你和管理员看得到 —— 别人打开这个网页，看到的是他自己的意见箱。" +
+      "意见是记在这台设备上的：换了手机或者清了浏览器数据，之前投的就找不回来了，所以重要的事别只写在这里。";
+}
+
+function renderInbox() {
+  const layer = document.getElementById("inboxLayer");
+  if (!layer) return;
+
+  const admin = !!state.announceAdmin;
+
+  // 入口按钮的颜色要跟着登录状态走，而且**关着的时候也要对** ——
+  // 不然进了管理模式、菜单还关着时，入口看着还跟普通同学一样。
+  const btn = document.getElementById("inboxBtn");
+  if (btn) btn.classList.toggle("is-admin", admin);
+
+  if (!state.inboxOpen) {
+    layer.hidden = true;
+    syncScrollLock();
+    return;
+  }
+
+  const wasOpen = !layer.hidden;
+
+  layer.hidden = false;
+  layer.classList.toggle("is-admin", admin);
+  syncScrollLock();
+
+  // 打开这一下就算「看过回复了」。放在画红点之前，所以红点当场就没了。
+  if (!admin) markInboxRead();
+  paintInboxBadge(inboxBadgeCount());
+
+  const list = state.inbox || [];
+
+  document.getElementById("inboxTitle").textContent =
+    admin ? "私信意见箱 · 管理" : "私信意见箱";
+
+  const sub = document.getElementById("inboxSub");
+  if (admin) {
+    const todo = list.filter(function (o) { return !o.reply; }).length;
+    sub.textContent = list.length
+      ? "全班共 " + list.length + " 条，还有 " + todo + " 条没回"
+      : "还没有人投意见";
+  } else {
+    sub.textContent = list.length
+      ? "你投过 " + list.length + " 条"
+      : "还没投过，第一条就是你的";
+  }
+
+  renderInboxNote(admin);
+
+  /* 筛选只给管理模式用 */
+  const filter = document.getElementById("inboxFilter");
+  Array.prototype.forEach.call(
+    filter.querySelectorAll(".inbox-filter-btn"),
+    function (b) {
+      b.classList.toggle("is-on", b.getAttribute("data-filter") === state.inboxFilter);
+    }
+  );
+
+  const ul = document.getElementById("inboxList");
+  const empty = document.getElementById("inboxEmpty");
+  const form = document.getElementById("inboxForm");
+
+  ul.innerHTML = "";
+
+  if (!state.inboxReady) {
+    // 接口不通就别摆出「可以投」的样子，不然人写完点发送才失败，很气人
+    filter.hidden = true;
+    ul.hidden = true;
+    form.hidden = true;
+    empty.hidden = false;
+    empty.textContent = HAS_BACKEND
+      ? "这块还没开通，等管理员把数据库那一步做完就能用了。"
+      : "预览版：还没接数据库。";
+    return;
+  }
+
+  filter.hidden = !admin;
+  ul.hidden = false;
+  form.hidden = admin;   // 管理模式是用来回话的，不用写自己的意见
+
+  const drafts = admin ? inboxDraft() : {};
+
+  const shown = (admin && state.inboxFilter === "todo")
+    ? list.filter(function (o) { return !o.reply; })
+    : list;
+
+  // 普通模式按时间正序（最新的回复挨着下面的输入框，像聊天）；
+  // 管理模式按时间倒序（最新的先处理，顺手）。
+  const ordered = shown.slice().sort(function (a, b) {
+    const da = Date.parse(a.created_at) || 0;
+    const db = Date.parse(b.created_at) || 0;
+    return admin ? db - da : da - db;
+  });
+
+  if (ordered.length === 0) {
+    empty.hidden = false;
+    if (admin) {
+      empty.textContent = state.inboxFilter === "todo"
+        ? "全都回完了，没欠着的。"
+        : "还没有人投意见。";
+    } else {
+      empty.textContent = "还没投过意见。上面写一条，只有你和管理员看得到。";
+    }
+  } else {
+    empty.hidden = true;
+    ordered.forEach(function (o) { ul.appendChild(opinionItem(o, admin, drafts)); });
+  }
+
+  // 刚打开、而且是普通模式：昵称沿用提交栏那份，正文清空，滚回最上面
+  if (!admin && !wasOpen) {
+    prefillInboxNick();
+    const scroller = document.getElementById("inboxScroll");
+    if (scroller) scroller.scrollTop = 0;
+  }
+}
+
+/* 把管理员已经打在各个回复框里的字捡起来。
+   列表是整块重画的（回复完一条就要重画），不先捡起来，
+   打了一半的那几条会被一起清掉 —— 这体验很差。 */
+function inboxDraft() {
+  const map = {};
+  Array.prototype.forEach.call(
+    document.querySelectorAll("#inboxList .op-reply-input"),
+    function (t) {
+      const id = t.getAttribute("data-reply-for");
+      if (id) map[id] = t.value;
+    }
+  );
+  return map;
+}
+
+function prefillInboxNick() {
+  const box = document.getElementById("inboxNick");
+  if (box) {
+    try { box.value = localStorage.getItem(LS_NICK) || ""; } catch (e) { /* ignore */ }
+  }
+  const body = document.getElementById("inboxBody");
+  if (body) body.value = "";
+  const counter = document.getElementById("inboxCounter");
+  if (counter) counter.textContent = "0";
+}
+
+function opinionItem(o, admin, drafts) {
+  const li = el("li", "op-item");
+  li.setAttribute("data-op-id", String(o.id));
+  if (!o.reply) li.classList.add("is-todo");
+
+  const head = el("div", "op-item-head");
+  head.appendChild(el("span", "op-when", fmtWhen(o.created_at)));
+  head.appendChild(el("span", "op-flag", o.reply ? "已回复" : "还没有回复"));
+
+  if (admin) {
+    const del = el("button", "op-del", "删除");
+    del.type = "button";
+    del.addEventListener("click", function () { onOpinionDelete(o); });
+    head.appendChild(del);
+  }
+  li.appendChild(head);
+
+  const who = el("div", "op-item-who");
+  who.appendChild(el("span", "op-nick", o.nickname || "匿名同学"));
+  li.appendChild(who);
+
+  li.appendChild(el("p", "op-body", o.body || ""));
+
+  if (o.reply) {
+    const rep = el("div", "op-reply");
+    rep.appendChild(el("span", "op-reply-tag", "管理员回复"));
+    rep.appendChild(el("p", "op-reply-body", o.reply));
+    if (o.replied_at) {
+      rep.appendChild(el("span", "op-reply-when", fmtWhen(o.replied_at)));
+    }
+    li.appendChild(rep);
+  }
+
+  if (admin) {
+    const form = el("div", "op-reply-form");
+
+    const ta = document.createElement("textarea");
+    ta.className = "input textarea op-reply-input";
+    ta.rows = 2;
+    ta.maxLength = 500;
+    ta.setAttribute("data-reply-for", String(o.id));
+    ta.placeholder = o.reply
+      ? "改一改这条回复（清空 = 撤回回复）"
+      : "写一句回复，投这条意见的同学会看到";
+    const key = String(o.id);
+    ta.value = Object.prototype.hasOwnProperty.call(drafts, key)
+      ? drafts[key]
+      : (o.reply || "");
+    form.appendChild(ta);
+
+    const btn = el("button", "btn-submit op-reply-btn", o.reply ? "更新回复" : "回复");
+    btn.type = "button";
+    btn.addEventListener("click", function () { onOpinionReply(o, ta, btn); });
+    form.appendChild(btn);
+
+    li.appendChild(form);
+  }
+
+  return li;
+}
+
+/* ----- 投一条意见 ----- */
+
+async function onOpinionSubmit(e) {
+  if (e) e.preventDefault();
+  if (state.inboxSending) return;
+
+  if (!state.inboxReady) { toast("意见箱还没开通"); return; }
+
+  const bodyBox = document.getElementById("inboxBody");
+  const nick = (document.getElementById("inboxNick").value || "").trim();
+  const body = (bodyBox.value || "").trim();
+
+  if (body.length < 2) { toast("写点什么再投吧"); bodyBox.focus(); return; }
+  if (body.length > 500) { toast("最多 500 个字"); return; }
+
+  const btn = document.getElementById("inboxSend");
+  const old = btn.textContent;
+  state.inboxSending = true;
+  btn.disabled = true;
+  btn.textContent = "发送中…";
+
+  try {
+    await opinionAddApi(inboxKey(), nick, body);
+    try { localStorage.setItem(LS_NICK, nick); } catch (e2) { /* 无痕模式忽略 */ }
+
+    bodyBox.value = "";
+    document.getElementById("inboxCounter").textContent = "0";
+
+    await refreshInbox();
+    renderInbox();
+    toast("投出去了，只有你和管理员看得到");
+  } catch (err) {
+    console.error(err);
+    toast("没发出去：" + friendly(err));
+  } finally {
+    state.inboxSending = false;
+    btn.disabled = false;
+    btn.textContent = old;
+  }
+}
+
+/* ----- 回复 / 删除（管理员）----- */
+
+async function onOpinionReply(o, ta, btn) {
+  const tk = state.adminToken || readToken();
+  if (!tk) { toast("回复要管理口令：先从页脚进「公告管理」"); return; }
+
+  const text = (ta.value || "").trim();
+  if (text.length > 500) { toast("回复最多 500 个字"); return; }
+
+  const old = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "保存中…";
+
+  try {
+    await opinionReplyApi(tk, o.id, text);
+    await refreshInbox();
+    renderInbox();
+    toast(text ? "回复好了" : "回复已撤回");
+  } catch (err) {
+    console.error(err);
+    toast("没保存上：" + friendly(err));
+    btn.disabled = false;
+    btn.textContent = old;
+  }
+}
+
+async function onOpinionDelete(o) {
+  const tk = state.adminToken || readToken();
+  if (!tk) { toast("删意见要管理口令：先从页脚进「公告管理」"); return; }
+
+  const ok = window.confirm(
+    "确定删掉这条意见吗？\n\n「" + (o.nickname || "匿名") + "：" +
+    String(o.body || "").slice(0, 40) + "」\n\n" +
+    "删掉就找不回来了，投意见的同学那边也会一起消失。"
+  );
+  if (!ok) return;
+
+  try {
+    await opinionDeleteApi(tk, o.id);
+  } catch (err) {
+    console.error(err);
+    toast("删除失败：" + friendly(err));
+    return;
+  }
+
+  await refreshInbox();
+  renderInbox();
+  toast("已删除");
+}
+
+/* ----- 绑定 ----- */
+
+function bindInbox() {
+  document.getElementById("inboxBtn").addEventListener("click", openInbox);
+  document.getElementById("inboxMask").addEventListener("click", closeInbox);
+  document.getElementById("inboxClose").addEventListener("click", closeInbox);
+
+  const body = document.getElementById("inboxBody");
+  body.addEventListener("input", function () {
+    document.getElementById("inboxCounter").textContent = String(body.value.length);
+  });
+
+  document.getElementById("inboxForm").addEventListener("submit", onOpinionSubmit);
+
+  document.getElementById("inboxFilter").addEventListener("click", function (e) {
+    const b = e.target.closest("button[data-filter]");
+    if (!b) return;
+    state.inboxFilter = b.getAttribute("data-filter") || "all";
+    renderInbox();
+  });
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && state.inboxOpen) closeInbox();
   });
 }
 
@@ -1792,18 +2400,20 @@ async function boot() {
   bindSubmit();
   bindAnnounce();
   bindDiscuss();
+  bindInbox();
 
   if (HAS_BACKEND) {
-    // 公告和评论都是各自单独加载的：哪一块出问题（比如对应的表还没建），
-    // 都只是那一块用不了，榜单照常显示，不会一起挂掉。
+    // 公告、评论、意见箱都是各自单独加载的：哪一块出问题
+    // （比如对应的表还没建），都只是那一块用不了，榜单照常显示，不会一起挂掉。
     await bootAnnounce();
     await refreshComments();
+    await refreshInbox();
 
     try {
       await reload();
       state.backendOk = true;
       refreshNote();
-      applyDiscussHash();
+      applyHash();
       return;
     } catch (err) {
       console.error(err);
@@ -1819,13 +2429,14 @@ async function boot() {
     }
   } else {
     state.weeks = ensureThisWeek(mockWeeks());
+    await refreshInbox();
     setNote("preview",
       "当前是预览版：还没接数据库，提交的内容刷新就会消失，榜单上的也只是示例数据。");
   }
 
   renderTabs();
   renderList();
-  applyDiscussHash();
+  applyHash();
 }
 
 document.addEventListener("DOMContentLoaded", boot);

@@ -110,6 +110,67 @@ body {
   font-weight: 600;
 }
 
+/* 右上角的意见箱入口。放在 .meta 里 —— 那是 header 最右边的一块，
+   所以它就是「页面右上角」，而且不会像悬浮按钮那样挡住下面的内容。 */
+.inbox-btn {
+  position: relative;        /* 未读角标要定位到它的右上角 */
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--ink-2);
+  background: var(--card);
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  padding: 5px 12px 5px 10px;
+  cursor: pointer;
+  transition: all .16s ease;
+}
+
+.inbox-btn:hover { color: var(--red); border-color: var(--red); }
+.inbox-btn svg { display: block; flex: none; }
+
+/* 窄屏上把「意见箱」三个字收起来，只留信封图标。
+   不这么做的话，日期 · 倒计时 · 按钮挤在一行里放不下，
+   日期和倒计时会被折成两行，页头看着就乱了。 */
+@media (max-width: 520px) {
+  .inbox-btn-text { display: none; }
+  .inbox-btn { padding: 6px 9px; }
+}
+
+/* 管理模式下的入口换个色，一眼看出「现在是以管理员身份在看」 */
+.inbox-btn.is-admin {
+  color: var(--red-deep);
+  border-color: #ffd2da;
+  background: var(--red-soft);
+}
+
+/* 角标。绝对定位，所以有没有它都不会改变 header 的高度。 */
+.inbox-badge {
+  position: absolute;
+  right: -6px;
+  top: -6px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--red);
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 800;
+  line-height: 17px;
+  letter-spacing: 0;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  /* 一圈底色，把它和下面的按钮分开，看着才像浮起来的角标 */
+  box-shadow: 0 0 0 2px var(--bg);
+  pointer-events: none;
+}
+
 /* ---------- 布局 ---------- */
 
 .layout {
@@ -1175,6 +1236,199 @@ a.content:focus-visible {
   height: 42px;
   padding: 0 18px;
   font-size: 14px;
+}
+
+/* ---------- 私信意见箱的正文部分 ----------
+   外壳（遮罩、面板、头部、底部输入区）复用了上面讨论板那一套，
+   这里只写「意见卡片」自己的部分。 */
+
+.inbox-note {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--ink-2);
+  background: #f7f7f9;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+/* 管理模式下的「全部 / 待回复」切换 */
+.inbox-filter {
+  display: flex;
+  gap: 6px;
+  margin: 0 0 4px;
+}
+
+.inbox-filter-btn {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-2);
+  background: #fff;
+  border: 1px solid var(--line-2);
+  border-radius: 999px;
+  padding: 3px 12px;
+  cursor: pointer;
+  transition: all .16s ease;
+}
+
+.inbox-filter-btn:hover { border-color: var(--ink-3); color: var(--ink); }
+
+.inbox-filter-btn.is-on {
+  color: #fff;
+  background: var(--red);
+  border-color: var(--red);
+}
+
+.op-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.op-item {
+  padding: 12px 0 13px;
+  border-bottom: 1px solid var(--line);
+}
+
+.op-item:last-child { border-bottom: 0; }
+
+.op-item-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+
+.op-when {
+  font-size: 11.5px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 「已回复 / 还没回复」的小标签 */
+.op-flag {
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 4px;
+  padding: 1px 6px;
+  color: var(--ink-3);
+  background: #f2f2f5;
+}
+
+/* 已经回复过的 / 还没回复的，用标签颜色区分 */
+.op-item:not(.is-todo) .op-flag {
+  color: var(--teal);
+  background: #eefaf5;
+}
+
+.op-item.is-todo .op-flag {
+  color: #9a6b00;
+  background: #fff9ec;
+  border: 1px solid #ffe6b8;
+}
+
+/* 管理模式下列表条目多，左边加一道色条方便扫：绿的已回、橙的待回。
+   普通模式不加 —— 那是同学自己的意见箱，用不着这种「工作台」的观感。 */
+#inboxLayer.is-admin .op-item {
+  padding-left: 12px;
+  border-left: 2px solid var(--teal);
+}
+
+#inboxLayer.is-admin .op-item.is-todo { border-left-color: var(--orange); }
+
+.op-del {
+  margin-left: auto;
+  border: 1px solid var(--line-2);
+  background: #fff;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--ink-2);
+  padding: 1px 10px;
+  cursor: pointer;
+  transition: all .16s ease;
+}
+
+.op-del:hover { border-color: var(--red); color: var(--red); }
+
+.op-item-who {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+}
+
+.op-nick {
+  font-weight: 700;
+  color: var(--ink-2);
+}
+
+.op-body {
+  margin: 3px 0 0;
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 管理员的回复：缩进 + 一道竖线，跟本人的话区分开 */
+.op-reply {
+  position: relative;
+  margin-top: 9px;
+  padding: 8px 11px 9px;
+  background: var(--red-soft);
+  border-radius: var(--radius-sm);
+  border-left: 3px solid var(--red);
+}
+
+.op-reply-tag {
+  display: block;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--red-deep);
+}
+
+.op-reply-body {
+  margin: 3px 0 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.op-reply-when {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+/* 管理模式下的回复输入区 */
+.op-reply-form {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  margin-top: 9px;
+}
+
+.op-reply-input {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+  font-size: 13px;
+  padding: 8px 10px;
+}
+
+.op-reply-btn {
+  flex: none;
+  width: auto;
+  height: 38px;
+  padding: 0 16px;
+  font-size: 13px;
 }
 
 /* ---------- 页脚与提示 ---------- */

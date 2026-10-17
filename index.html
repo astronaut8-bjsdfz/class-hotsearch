@@ -13,7 +13,7 @@
   就把这里的版本号一起改掉（比如 20261016 → 20261017），
   否则浏览器可能拿旧的脚本去配新的网页，页面就会报错。
 -->
-<link rel="stylesheet" href="./style.css?v=20261016d">
+<link rel="stylesheet" href="./style.css?v=20261017a">
 </head>
 <body>
 
@@ -36,6 +36,22 @@
       <span class="meta-date" id="todayText"></span>
       <span class="meta-dot" aria-hidden="true"></span>
       <span class="meta-count" id="countdownText"></span>
+
+      <!-- 私信意见箱：只有投意见的人和管理员看得到内容 -->
+      <button class="inbox-btn" id="inboxBtn" type="button"
+              aria-haspopup="dialog" aria-controls="inboxLayer">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" aria-hidden="true">
+          <path d="M3.2 8.2c0-1.3 1-2.3 2.3-2.3h13c1.3 0 2.3 1 2.3 2.3v7.6c0 1.3-1 2.3-2.3 2.3h-13c-1.3 0-2.3-1-2.3-2.3V8.2Z"
+                stroke="currentColor" stroke-width="1.7"/>
+          <path d="m4.6 8.4 6.2 4.6a2 2 0 0 0 2.4 0l6.2-4.6"
+                stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+        </svg>
+        <!-- 「意见箱」这三个字在窄屏上会藏起来（只留信封图标），
+             否则日期和倒计时会被挤成两行。见 style.css 里的窄屏规则。 -->
+        <span class="inbox-btn-text">意见箱</span>
+        <!-- 有没回过的回复（管理人是「还没回的意见」）时，这里显示条数 -->
+        <span class="inbox-badge" id="inboxBadge" hidden></span>
+      </button>
     </div>
   </header>
 
@@ -97,7 +113,7 @@
 
       <label class="field">
         <span class="field-label">署名</span>
-        <input class="input" id="annAuthor" type="text" maxlength="8" value="班委会">
+        <input class="input" id="annAuthor" type="text" maxlength="8" value="管理员">
       </label>
 
       <div class="announce-flags">
@@ -163,6 +179,8 @@
           <li>榜单<b>按周统计</b>：周一零点自动开新的一周，上周的榜会留在「上周」标签里，随时能翻回去看。</li>
           <li>同一周里热度<b>实时排序</b>，没有结算时间，随时可能变。</li>
           <li><b>点一条热搜</b>就能进它的讨论板，评论的规则和上面一样：只写昵称、友善发言。</li>
+          <li>有<b>不想让大家看见</b>的话（建议、提醒、遇到的小麻烦），点右上角的<b>意见箱</b>。
+              那里的内容只有<b>你和管理员</b>看得到，管理员回你的话也只会出现在你自己的意见箱里。</li>
           <li>只写昵称，不写同学的<b>真实姓名</b>，老师也一律用化名或外号。</li>
           <li>不写具体家庭情况、不放同学正脸照。</li>
           <li><b>友善优先</b>：不点名批评、不翻旧账。这条是底线，违反的会被直接删掉。</li>
@@ -231,10 +249,65 @@
   </section>
 </div>
 
+<!-- ============ 私信意见箱 ============
+     外壳直接复用讨论板那套样式（.discuss / .discuss-panel / .cmt-form），
+     这样两个弹层长得一样、改一处两边都跟着变，不用维护两套 CSS。 -->
+<div class="discuss" id="inboxLayer" hidden>
+  <div class="discuss-mask" id="inboxMask"></div>
+
+  <section class="discuss-panel" id="inboxPanel" role="dialog" aria-modal="true"
+           aria-labelledby="inboxTitle">
+
+    <header class="discuss-head">
+      <div class="discuss-head-text">
+        <h2 class="discuss-title" id="inboxTitle">私信意见箱</h2>
+        <p class="discuss-sub" id="inboxSub"></p>
+      </div>
+      <button class="discuss-close" id="inboxClose" type="button" aria-label="关闭意见箱">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" aria-hidden="true">
+          <path d="M6.5 6.5 17.5 17.5M17.5 6.5 6.5 17.5" stroke="currentColor"
+                stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </header>
+
+    <div class="discuss-scroll" id="inboxScroll">
+      <!-- 说明文字会跟着「普通 / 管理」两种模式换内容 -->
+      <p class="inbox-note" id="inboxNote"></p>
+
+      <!-- 只有管理模式才出现 -->
+      <div class="inbox-filter" id="inboxFilter" hidden>
+        <button class="inbox-filter-btn" type="button" data-filter="all">全部</button>
+        <button class="inbox-filter-btn" type="button" data-filter="todo">待回复</button>
+      </div>
+
+      <ul class="op-list" id="inboxList"></ul>
+      <p class="cmt-empty" id="inboxEmpty" hidden></p>
+    </div>
+
+    <!-- 普通模式才出现：只能投意见，看不到别人的 -->
+    <form class="cmt-form" id="inboxForm" autocomplete="off">
+      <div class="cmt-nick-row">
+        <label class="cmt-label" for="inboxNick">昵称</label>
+        <input class="input cmt-nick" id="inboxNick" type="text" maxlength="8"
+               placeholder="不填视为匿名" autocomplete="off">
+        <span class="cmt-counter"><em id="inboxCounter">0</em>/500</span>
+      </div>
+      <div class="cmt-row">
+        <textarea class="input textarea cmt-input" id="inboxBody" rows="3" maxlength="500"
+                  placeholder="想跟管理员说的话。只有你和管理员看得到。"></textarea>
+        <button class="btn-submit cmt-send" id="inboxSend" type="submit">投出去</button>
+      </div>
+    </form>
+
+  </section>
+</div>
+
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-<script src="./config.js?v=20261016d"></script>
-<script src="./mock-data.js?v=20261016d"></script>
-<script src="./app.js?v=20261016d"></script>
+
+<script src="./config.js?v=20261017a"></script>
+<script src="./mock-data.js?v=20261017a"></script>
+<script src="./app.js?v=20261017a"></script>
 </body>
 </html>
