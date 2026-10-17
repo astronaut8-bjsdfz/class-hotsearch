@@ -2048,9 +2048,11 @@ function renderInbox() {
       ? "全班共 " + list.length + " 条，还有 " + todo + " 条没回"
       : "还没有人投意见";
   } else {
+    // ⚠️ 普通模式看到的**只有自己那几条**，别人打开看到的是他自己那份。
+    // 所以这里不能说「第一条就是你的」—— 那听着像全班在共用一张榜。
     sub.textContent = list.length
       ? "你投过 " + list.length + " 条"
-      : "还没投过，第一条就是你的";
+      : "你还没投过";
   }
 
   renderInboxNote(admin);
@@ -2107,7 +2109,8 @@ function renderInbox() {
         ? "全都回完了，没欠着的。"
         : "还没有人投意见。";
     } else {
-      empty.textContent = "还没投过意见。上面写一条，只有你和管理员看得到。";
+      // 输入框就在这条提示的下面（底部那个发送栏），所以说「下面」。
+      empty.textContent = "在下面写一条就行，只有你和管理员看得到。";
     }
   } else {
     empty.hidden = true;
