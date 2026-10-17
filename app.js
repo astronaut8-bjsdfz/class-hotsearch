@@ -1158,6 +1158,11 @@ async function enterAdmin(tk) {
 async function onAdminLogout() {
   state.announceAdmin = false;
   state.adminToken = "";
+  // ⚠️ 还要把「记住的口令」从这台设备上抹掉。
+  // 只清内存里的 state 是不够的：localStorage 里那份还活着，
+  // 于是刷新后点「公告管理」会自动又进去、删除按钮也还在。
+  // 退出就该是退出，下次要用就重新输口令。
+  writeToken("");
   state.announceFormOpen = false;
   state.announceEditingId = null;
   state.announceOpen = readAnnOpen();
@@ -1166,7 +1171,10 @@ async function onAdminLogout() {
   state.inboxFilter = "all";
   await refreshInbox();
   renderInbox();
-  toast("已退出管理模式");
+  // 讨论板如果正开着，把评论重画一遍 —— 不然那几个「删除」按钮会一直挂在那儿
+  const opened = state.discussId ? findItem(state.discussId) : null;
+  if (opened) renderComments(opened);
+  toast("已退出管理模式，这台设备不再记住口令");
 }
 
 async function refreshAnnounceAdmin() {
@@ -1616,10 +1624,19 @@ function commentItem(c, mod) {
   return li;
 }
 
-/* 有管理口令（或者已经进了管理模式）才把删除按钮摆出来。
-   真正能不能删还是数据库说了算 —— 这里只是别把按钮摆给全班看。 */
+/* 只有「现在真的在管理模式里」才把删除按钮摆出来。
+   ⚠️ 以前这里还 or 了 readToken()，那是 bug：readToken() 读的是 localStorage 里
+   「记住的口令」，它一直在，于是退出管理模式后按钮还挂着、点了还真能删。
+   「记住了口令」≠「现在是管理员」，两者必须分开。 */
 function canModerate() {
-  return !!(state.announceAdmin || state.adminToken || readToken());
+  return !!state.announceAdmin;
+}
+
+/* 需要口令的写操作统一从这里取口令。
+   不在管理模式一律拿不到空字符串 —— 哪怕 localStorage 里还留着上次记住的口令。
+   于是「退出管理模式」之后，删除 / 回复都会被这一关挡住。 */
+function adminTokenNow() {
+  return state.announceAdmin ? (state.adminToken || "") : "";
 }
 
 /* ----- 发评论 / 删评论 ----- */
@@ -1699,7 +1716,7 @@ async function onCommentSubmit(e) {
 }
 
 async function onCommentDelete(c) {
-  const tk = state.adminToken || readToken();
+  const tk = adminTokenNow();
   if (!tk) { toast("删评论要管理口令：先从页脚进「公告管理」"); return; }
 
   const ok = window.confirm(
@@ -1927,7 +1944,7 @@ async function refreshInbox() {
 
   try {
     const rows = admin
-      ? await opinionListApi(state.adminToken || readToken())
+      ? await opinionListApi(adminTokenNow())
       : await opinionMineApi(inboxKey());
     state.inbox = Array.isArray(rows) ? rows : [];
     state.inboxReady = true;
@@ -2236,7 +2253,7 @@ async function onOpinionSubmit(e) {
 /* ----- 回复 / 删除（管理员）----- */
 
 async function onOpinionReply(o, ta, btn) {
-  const tk = state.adminToken || readToken();
+  const tk = adminTokenNow();
   if (!tk) { toast("回复要管理口令：先从页脚进「公告管理」"); return; }
 
   const text = (ta.value || "").trim();
@@ -2260,7 +2277,7 @@ async function onOpinionReply(o, ta, btn) {
 }
 
 async function onOpinionDelete(o) {
-  const tk = state.adminToken || readToken();
+  const tk = adminTokenNow();
   if (!tk) { toast("删意见要管理口令：先从页脚进「公告管理」"); return; }
 
   const ok = window.confirm(
