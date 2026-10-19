@@ -18,7 +18,7 @@ window.HOTSEARCH_BACKEND = {
   url: "https://jjyospedfdctgjhmhnex.supabase.co",
 
   /* 公开密钥（Publishable key） */
-  anonKey: "sb_publishable_3Hj8gpHOwqcEAozNka_kFQ_GYgxyDOV",
+  anonKey: "hsb_publishable_3Hj8gpHOwqcEAozNka_kFQ_GYgxyDOV",
 
   /* 表名，不用改 */
   table: "hot_items",
