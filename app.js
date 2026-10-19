@@ -463,12 +463,17 @@ function renderList() {
   const base = baselineFor(wk.key, wk.items);
 
   if (wk.items.length === 0) {
-    const empty = el("li", "empty-state");
-    empty.appendChild(el("p", "empty-title", "这周还没有人爆料"));
-    empty.appendChild(el("p", "empty-sub", "写一句，你就是这周的第一条热搜。"));
-    list.appendChild(empty);
-    return;
-  }
+      const empty = el("li", "empty-state");
+      if(state.backendOk){
+        empty.appendChild(el("p", "empty-title", "这周还没有人爆料"));
+        empty.appendChild(el("p", "empty-sub", "写一句，你就是这周的第一条热搜。"));
+      }else{
+        empty.appendChild(el("p", "empty-title", "榜单数据加载失败"));
+        empty.appendChild(el("p", "empty-sub", "上方提示框有详细错误信息，请刷新页面重试。"));
+      }
+      list.appendChild(empty);
+      return;
+    }
 
   wk.items.forEach(function (item, idx) {
     const rank = idx + 1;
