@@ -2403,7 +2403,6 @@ async function reload() {
 
 async function boot() {
   renderHeader();
-
   // 文件和脚本版本对不上时，先给出能看懂的解释，再停下来，
   // 免得后面一堆看不懂的报错把页面观感全毁了。
   const missing = missingParts();
@@ -2414,21 +2413,18 @@ async function boot() {
       "刷完还是这样，就把括号里这段发给网页管理员：缺少 " + missing.join("、") + "。");
     return;
   }
-
   loadLikes();
   renderCats();
   bindSubmit();
   bindAnnounce();
   bindDiscuss();
   bindInbox();
-
   if (HAS_BACKEND) {
     // 公告、评论、意见箱都是各自单独加载的：哪一块出问题
     // （比如对应的表还没建），都只是那一块用不了，榜单照常显示，不会一起挂掉。
     await bootAnnounce();
     await refreshComments();
     await refreshInbox();
-
     try {
       await reload();
       state.backendOk = true;
@@ -2437,23 +2433,23 @@ async function boot() {
       return;
     } catch (err) {
       console.error(err);
-      state.weeks = ensureThisWeek(mockWeeks());
+      // ========== 修改：数据库失败，不再加载mock虚拟榜单 ==========
+      // 只创建空的本周，不加载任何测试虚拟数据
+      state.weeks = ensureThisWeek([]);
+      state.backendOk = false;
       const msg = String((err && err.message) || err);
-      // 「null / undefined」几乎总是文件版本错配，不是真的连不上数据库，
-      // 提示要分清楚，不然会白白折腾数据库半天。
       const looksLikeMismatch = /null|undefined/i.test(msg);
       setNote("error", looksLikeMismatch
-        ? "页面脚本出了点问题，现在显示的是示例数据。" +
-          "这多半是浏览器缓存了旧文件，按 Ctrl + F5 强制刷新一次。原始信息：" + msg
-        : "连不上数据库，现在显示的是示例数据。错误信息：" + msg);
+        ? "页面脚本出现异常，无法加载榜单。请按 Ctrl + F5 强制刷新。原始信息：" + msg
+        : "数据库连接失败，无法加载班级热搜榜单。请检查网络或稍后重试。错误信息：" + msg);
     }
   } else {
+    // 没有配置后端（HAS_BACKEND=false），才使用mock预览数据，保留原有预览逻辑
     state.weeks = ensureThisWeek(mockWeeks());
     await refreshInbox();
     setNote("preview",
       "当前是预览版：还没接数据库，提交的内容刷新就会消失，榜单上的也只是示例数据。");
   }
-
   renderTabs();
   renderList();
   applyHash();
